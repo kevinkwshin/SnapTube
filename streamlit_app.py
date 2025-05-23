@@ -527,68 +527,68 @@ def get_transcript(video_id):
     try:
         ytt_api = YouTubeTranscriptApi()
         
-        # 사용 가능한 자막 목록 가져오기
-        st.info("📋 자막 목록 확인 중...")
+        # 사용 가능한 자막 목록 가져오기 (로그 최소화)
         transcript_list = ytt_api.list(video_id)
-        
-        # 사용 가능한 자막 정보 표시
-        st.write("**사용 가능한 자막:**")
-        for transcript in transcript_list:
-            transcript_type = "수동 작성" if transcript.is_generated == 0 else "자동 생성"
-            st.write(f"- {transcript.language} ({transcript.language_code}) - {transcript_type}")
         
         fetched = None
         successful_transcript = None
         errors = []
+        transcript_info = []
+        
+        # 사용 가능한 자막 정보 수집
+        for transcript in transcript_list:
+            transcript_type = "수동 작성" if transcript.is_generated == 0 else "자동 생성"
+            transcript_info.append(f"{transcript.language} ({transcript.language_code}) - {transcript_type}")
         
         # 1단계: 수동 작성된 자막 찾기 (is_generated == 0)
-        st.info("🔍 수동 작성 자막 검색 중...")
         for transcript in transcript_list:
             if transcript.is_generated == 0:  # 수동 자막
                 try:
                     fetched = transcript.fetch()
                     successful_transcript = transcript
-                    st.success(f"✅ 수동 자막 발견: {transcript.language} ({transcript.language_code})")
                     break
                 except Exception as e:
-                    error_msg = f"수동 자막 {transcript.language} 실패: {str(e)}"
-                    errors.append(error_msg)
-                    st.warning(f"⚠️ {error_msg}")
+                    errors.append(f"수동 자막 {transcript.language} 실패: {str(e)}")
                     continue
         
         # 2단계: 수동 자막이 없으면 자동 생성 자막 사용 (is_generated == 1)
         if fetched is None:
-            st.info("🔍 자동 생성 자막 검색 중...")
             for transcript in transcript_list:
                 if transcript.is_generated == 1:  # 자동 생성 자막
                     try:
                         fetched = transcript.fetch()
                         successful_transcript = transcript
-                        st.info(f"ℹ️ 자동 생성 자막 사용: {transcript.language} ({transcript.language_code})")
                         break
                     except Exception as e:
-                        error_msg = f"자동 자막 {transcript.language} 실패: {str(e)}"
-                        errors.append(error_msg)
-                        st.warning(f"⚠️ {error_msg}")
+                        errors.append(f"자동 자막 {transcript.language} 실패: {str(e)}")
                         continue
         
         # 자막이 없는 경우
         if fetched is None:
-            detailed_error = f"모든 자막 가져오기 실패.\n\n세부 오류:\n" + "\n".join(errors)
-            return None, detailed_error
+            detailed_error = f"모든 자막 가져오기 실패.\n\n사용 가능한 자막:\n" + "\n".join(transcript_info) + "\n\n세부 오류:\n" + "\n".join(errors)
+            return None, detailed_error, None
         
-        # 자막 텍스트 합치기
+        # 자막 텍스트 합치기 (작은따옴표 제거)
         output = ''
         for f in fetched:
-            output += f.text + ' '
+            text = f.text.replace("'", "").replace('"', '')  # 작은따옴표, 큰따옴표 제거
+            output += text + ' '
         
-        st.info(f"📊 자막 정보: {len(fetched)}개 세그먼트, 총 {len(output.strip())}자")
+        # 성공 정보 반환
+        success_info = {
+            'language': successful_transcript.language,
+            'language_code': successful_transcript.language_code,
+            'type': '수동 작성' if successful_transcript.is_generated == 0 else '자동 생성',
+            'segments': len(fetched),
+            'total_chars': len(output.strip()),
+            'available_transcripts': transcript_info
+        }
         
-        return output.strip(), None
+        return output.strip(), None, success_info
         
     except Exception as e:
         detailed_error = f"자막 목록 가져오기 실패: {str(e)}\n\n가능한 원인:\n1. 잘못된 비디오 ID\n2. 비공개/삭제된 비디오\n3. IP 차단\n4. 네트워크 오류"
-        return None, detailed_error
+        return None, detailed_error, None
 
 def summarize_text(text, api_key):
     """Gemini를 사용한 텍스트 요약"""
@@ -679,10 +679,14 @@ def main():
         
         # 자막 가져오기
         with st.spinner("📄 자막 가져오는 중..."):
-            transcript, error = get_transcript(video_id)
+            transcript, error, info = get_transcript(video_id)
         
         if error:
-            st.error(f"❌ 자막 가져오기 실패: {error}")
+            st.error(f"❌ 자막 가져오기 실패")
+            
+            # 세부 오류는 expander로 접기
+            with st.expander("🔍 세부 오류 정보"):
+                st.text(error)
             
             # 해결책 제시
             with st.expander("🔧 해결 방법"):
@@ -695,51 +699,72 @@ def main():
                 ### 해결책
                 1. **VPN 사용** - 가장 효과적
                 2. **로컬에서 실행** - 100% 안정적
-                ```bash
-                pip install streamlit youtube-transcript-api google-generativeai
-                streamlit run app.py
-                ```
                 3. **다른 비디오 시도** - 자막이 있는 공개 비디오
                 4. **모바일 핫스팟 사용**
                 """)
             return
         
-        if transcript:
-            st.success(f"✅ 자막 추출 성공! (총 {len(transcript):,}자)")
+        if transcript and info:
+            # 성공 메시지를 간결하게 표시
+            st.success(f"✅ 자막 추출 성공! ({info['type']}, {info['total_chars']:,}자)")
             
-            # 원본 자막 표시
-            if show_transcript:
-                st.subheader("📜 원본 자막")
-                st.text_area("추출된 자막", transcript, height=200)
+            # 세부 정보는 expander로 접기
+            with st.expander("📊 자막 상세 정보"):
+                st.write(f"**사용된 자막**: {info['language']} ({info['language_code']}) - {info['type']}")
+                st.write(f"**세그먼트 수**: {info['segments']:,}개")
+                st.write(f"**총 글자 수**: {info['total_chars']:,}자")
+                st.write("**사용 가능한 자막**:")
+                for transcript_info in info['available_transcripts']:
+                    st.write(f"- {transcript_info}")
             
-            # 요약 생성
-            with st.spinner("🤖 AI 요약 생성 중..."):
-                summary, summary_error = summarize_text(transcript, api_key)
+            # 메인 콘텐츠 영역을 탭으로 구성
+            tab1, tab2 = st.tabs(["📜 원본 자막", "🤖 AI 요약"])
             
-            if summary_error:
-                st.error(f"❌ 요약 생성 실패: {summary_error}")
-                return
-            
-            if summary:
-                st.subheader("📋 AI 요약")
-                st.markdown(summary)
-                
-                # 다운로드 버튼
-                col1, col2 = st.columns(2)
-                with col1:
-                    st.download_button(
-                        "📥 요약 다운로드",
-                        summary,
-                        f"youtube_summary_{video_id}.md",
-                        mime="text/markdown"
+            with tab1:
+                st.markdown("### 📜 원본 자막")
+                if show_transcript:
+                    st.text_area(
+                        "추출된 자막",
+                        transcript,
+                        height=400,
+                        help="자막 내용을 확인하고 복사할 수 있습니다."
                     )
-                
-                with col2:
+                    
+                    # 다운로드 버튼
                     st.download_button(
                         "📥 자막 다운로드",
                         transcript,
                         f"youtube_transcript_{video_id}.txt",
-                        mime="text/plain"
+                        mime="text/plain",
+                        use_container_width=True
+                    )
+                else:
+                    st.info("📜 원본 자막 표시를 체크하면 여기에 표시됩니다.")
+            
+            with tab2:
+                st.markdown("### 🤖 AI 요약")
+                
+                # 요약 생성
+                with st.spinner("🤖 AI 요약 생성 중..."):
+                    summary, summary_error = summarize_text(transcript, api_key)
+                
+                if summary_error:
+                    st.error(f"❌ 요약 생성 실패")
+                    with st.expander("🔍 오류 세부사항"):
+                        st.text(summary_error)
+                    return
+                
+                if summary:
+                    # 요약 내용 표시
+                    st.markdown(summary)
+                    
+                    # 요약 다운로드 버튼
+                    st.download_button(
+                        "📥 요약 다운로드",
+                        summary,
+                        f"youtube_summary_{video_id}.md",
+                        mime="text/markdown",
+                        use_container_width=True
                     )
 
     # 테스트 비디오
