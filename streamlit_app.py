@@ -502,7 +502,6 @@
 
 # if __name__ == "__main__":
 #     main()
-
 import streamlit as st
 from youtube_transcript_api import YouTubeTranscriptApi
 import google.generativeai as genai
@@ -596,7 +595,12 @@ def summarize_text(text, api_key):
         genai.configure(api_key=api_key)
         model = genai.GenerativeModel('gemini-2.0-flash-exp')
         
-        # 텍스트 길이 제한 제거 (필요시 Gemini가 자동 처리)
+        # 텍스트 길이 제한
+        max_length = 20000
+        if len(text) > max_length:
+            text = text[:max_length] + "..."
+            st.warning(f"⚠️ 텍스트가 너무 길어서 {max_length}자로 제한했습니다.")
+        
         prompt = f"""
 다음 YouTube 비디오의 자막을 요약해주세요:
 
@@ -646,18 +650,13 @@ def main():
     api_key = st.text_input(
         "🔑 Gemini API Key",
         type="password",
-        help="Google AI Studio에서 발급받으세요: https://makersuite.google.com/app/apikey"
+        help="Google AI Studio에서 발급받으세요"
     )
-    
-    # 링크 버튼 추가
-    if st.button("🔗 AI Studio에서 API 키 발급받기"):
-        st.markdown("[Google AI Studio로 이동하기](https://makersuite.google.com/app/apikey)")
     
     # 비디오 URL 입력
     video_input = st.text_input(
         "🎥 YouTube URL 또는 비디오 ID",
-        placeholder="https://www.youtube.com/watch?v=VIDEO_ID",
-        help="전체 YouTube URL 또는 11자리 비디오 ID (예: dQw4w9WgXcQ)를 입력하세요. 비디오 ID는 YouTube URL에서 'v=' 뒤의 11자리 문자입니다."
+        placeholder="https://www.youtube.com/watch?v=VIDEO_ID"
     )
     
     # 옵션
@@ -717,39 +716,17 @@ def main():
                 for transcript_info in info['available_transcripts']:
                     st.write(f"- {transcript_info}")
             
-            # 메인 콘텐츠 영역을 탭으로 구성 (큰 글씨로)
-            st.markdown("---")
-            st.markdown("## 📄 결과")
+            # 메인 콘텐츠 영역을 탭으로 구성
+            tab1, tab2 = st.tabs(["📜 원본 자막", "🤖 AI 요약"])
             
-            # 큰 탭 만들기
-            col1, col2 = st.columns(2)
-            
-            with col1:
-                transcript_tab = st.button("📜 원본 자막 보기", use_container_width=True, type="secondary")
-            
-            with col2:
-                summary_tab = st.button("🤖 AI 요약 보기", use_container_width=True, type="primary")
-            
-            # 세션 상태로 탭 관리
-            if 'active_tab' not in st.session_state:
-                st.session_state.active_tab = 'summary'  # 기본값을 AI 요약으로
-            
-            if transcript_tab:
-                st.session_state.active_tab = 'transcript'
-            elif summary_tab:
-                st.session_state.active_tab = 'summary'
-            
-            # 선택된 탭에 따라 내용 표시
-            if st.session_state.active_tab == 'transcript':
-                st.markdown("---")
+            with tab1:
                 st.markdown("### 📜 원본 자막")
                 if show_transcript:
                     st.text_area(
                         "추출된 자막",
                         transcript,
                         height=400,
-                        help="자막 내용을 확인하고 복사할 수 있습니다.",
-                        key="transcript_area"
+                        help="자막 내용을 확인하고 복사할 수 있습니다."
                     )
                     
                     # 다운로드 버튼
@@ -763,8 +740,7 @@ def main():
                 else:
                     st.info("📜 원본 자막 표시를 체크하면 여기에 표시됩니다.")
             
-            elif st.session_state.active_tab == 'summary':
-                st.markdown("---")
+            with tab2:
                 st.markdown("### 🤖 AI 요약")
                 
                 # 요약 생성
@@ -789,6 +765,24 @@ def main():
                         mime="text/markdown",
                         use_container_width=True
                     )
+
+    # 테스트 비디오
+    st.markdown("---")
+    st.subheader("🧪 테스트용 비디오")
+    
+    test_videos = [
+        ("TED Talk", "UF8uR6Z6KLc", "How to speak so that people want to listen"),
+        ("교육 영상", "kjBOesZCoqc", "Khan Academy - Intro to Economics"),
+        ("인기 영상", "dNVtMmLlnoE", "Crash Course World History")
+    ]
+    
+    cols = st.columns(3)
+    for i, (category, vid_id, title) in enumerate(test_videos):
+        with cols[i]:
+            st.write(f"**{category}**")
+            st.write(title)
+            if st.button(f"테스트", key=f"test_{i}"):
+                st.info(f"비디오 ID `{vid_id}`를 위에 입력하고 실행해보세요!")
 
 if __name__ == "__main__":
     main()
