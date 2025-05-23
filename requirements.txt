@@ -1,2 +1,7 @@
 streamlit
 openai
+youtube-transcript-api==1.0.3
+google-generativeai==0.3.2 
+google-genai
+google-api-python-client
+requests
