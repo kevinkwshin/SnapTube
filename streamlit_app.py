@@ -221,8 +221,8 @@ def main():
     # 비디오 입력
     video_input = st.text_input(
         "🎥 YouTube URL 또는 비디오 ID",
-        placeholder="https://www.youtube.com/watch?v=_wUoLrYyJBg",
-        help="YouTube URL 전체 또는 11자리 비디오 ID (예: _wUoLrYyJBg)"
+        placeholder="https://www.youtube.com/watch?v=ABCDEFGHIJK",
+        help="YouTube URL 전체 또는 11자리 비디오 ID (예: ABCDEFGHIJK)"
     )
     
     # 처리 버튼
