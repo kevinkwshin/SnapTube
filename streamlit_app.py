@@ -45,122 +45,121 @@ def get_free_proxies():
             {'http': 'http://47.74.152.29:8888', 'https': 'http://47.74.152.29:8888'},
         ]
 
-def get_transcript_with_bypass(video_id, use_bypass=False):
-    """IP 우회 기능이 포함된 자막 가져오기"""
-    methods = []
-    errors = []
-    
-    # Method 1: 직접 요청
-    methods.append(("직접 요청", lambda: YouTubeTranscriptApi.get_transcript(video_id)))
-    
-    # Method 2: 프록시 사용 (우회 활성화시)
-    if use_bypass:
-        try:
-            proxies = get_free_proxies()
-            for i, proxy in enumerate(proxies):
-                methods.append((f"프록시 {i+1}", lambda p=proxy: YouTubeTranscriptApi.get_transcript(video_id, proxies=p)))
-        except:
-            pass
-    
-    # Method 3: 다른 언어 시도
-    methods.append(("다른 언어 시도", lambda: try_different_languages(video_id)))
-    
-    # 각 방법을 순차적으로 시도
-    for method_name, method_func in methods:
-        try:
-            transcript = method_func()
-            if transcript:
-                # 성공한 방법 표시
-                if "프록시" in method_name:
-                    st.success(f"✅ {method_name}으로 IP 우회 성공!")
-                elif method_name == "직접 요청":
-                    st.success(f"✅ {method_name} 성공!")
-                else:
-                    st.success(f"✅ {method_name} 성공!")
-                
-                return transcript, None
-        except Exception as e:
-            error_msg = f"{method_name}: {str(e)[:100]}..."
-            errors.append(error_msg)
-            
-            # IP 차단 감지
-            if "blocking" in str(e).lower() or "blocked" in str(e).lower():
-                if not use_bypass:
-                    return None, f"IP 차단 감지됨. '🚀 IP 우회 활성화'를 체크하고 다시 시도하세요.\n\n상세 오류: {str(e)}"
-            
-            time.sleep(random.uniform(1, 2))  # 짧은 지연
-    
-    # 모든 방법 실패
-    detailed_error = "모든 방법이 실패했습니다.\n\n시도한 방법들:\n" + "\n".join(errors)
-    return None, detailed_error
-
-def try_different_languages(video_id):
-    """다른 언어 자막 시도"""
-    transcript_list = YouTubeTranscriptApi.list_transcripts(video_id)
-    
-    # 수동 자막 우선
-    for transcript in transcript_list:
-        if not transcript.is_generated:
-            try:
-                return transcript.fetch()
-            except:
-                continue
-    
-    # 자동 생성 자막
-    for transcript in transcript_list:
-        if transcript.is_generated:
-            try:
-                return transcript.fetch()
-            except:
-                continue
-    
-    raise Exception("사용 가능한 자막이 없습니다")
-
 def get_transcript(video_id, use_bypass=False):
-    """자막 가져오기 - IP 우회 기능 포함"""
+    """원본 코드 구조를 따른 자막 가져오기"""
     try:
-        # IP 우회 기능 사용
-        transcript_data, error = get_transcript_with_bypass(video_id, use_bypass)
-        
-        if error:
-            return None, error, None
-        
-        if not transcript_data:
-            return None, "자막을 가져올 수 없습니다", None
-        
-        # 자막 정보 수집
+        # 원본 코드와 동일한 방식
         ytt_api = YouTubeTranscriptApi()
-        transcript_list = ytt_api.list_transcripts(video_id)
         
-        transcript_info = []
+        # IP 우회 시도 (프록시 사용)
+        if use_bypass:
+            try:
+                proxies = get_free_proxies()
+                for i, proxy in enumerate(proxies):
+                    try:
+                        st.info(f"🔄 프록시 {i+1} 시도 중...")
+                        transcript_list = ytt_api.list(video_id, proxies=proxy)
+                        
+                        # 원본 코드와 동일한 로직
+                        fetched = None
+                        successful_transcript = None
+                        
+                        # 1단계: 수동 작성된 자막 찾기 (is_generated == 0)
+                        for transcript in transcript_list:
+                            if transcript.is_generated == 0:  # get youtube subtitle
+                                fetched = transcript.fetch()
+                                successful_transcript = transcript
+                                st.success(f"✅ 프록시 {i+1}로 수동 자막 발견!")
+                                break
+                        
+                        # 2단계: 수동 자막이 없으면 자동 생성 자막 사용
+                        if fetched is None:
+                            for transcript in transcript_list:
+                                if transcript.is_generated == 1:
+                                    fetched = transcript.fetch()
+                                    successful_transcript = transcript
+                                    st.info(f"✅ 프록시 {i+1}로 자동 자막 사용")
+                                    break
+                        
+                        if fetched is not None:
+                            # 원본 코드와 동일한 텍스트 합치기
+                            output = ''
+                            for f in fetched:
+                                output += f.text + ' '
+                            
+                            # 성공 정보 반환
+                            success_info = {
+                                'language': successful_transcript.language,
+                                'language_code': successful_transcript.language_code,
+                                'type': '수동 작성' if successful_transcript.is_generated == 0 else '자동 생성',
+                                'segments': len(fetched),
+                                'total_chars': len(output.strip()),
+                                'method': f'프록시 {i+1}',
+                                'available_transcripts': [f"{t.language} ({t.language_code}) - {'수동' if t.is_generated == 0 else '자동'}" for t in transcript_list]
+                            }
+                            
+                            return output.strip(), None, success_info
+                            
+                    except Exception as e:
+                        st.warning(f"❌ 프록시 {i+1} 실패: {str(e)[:50]}...")
+                        continue
+            except Exception as e:
+                st.warning(f"프록시 목록 가져오기 실패: {str(e)}")
+        
+        # 직접 요청 (원본 코드와 동일)
+        st.info("🔄 직접 요청 시도 중...")
+        transcript_list = ytt_api.list(video_id)
+        
+        fetched = None
+        successful_transcript = None
+        
+        # 1단계: 수동 작성된 자막 찾기 (is_generated == 0) - 원본 코드와 동일
         for transcript in transcript_list:
-            transcript_type = "수동 작성" if transcript.is_generated == 0 else "자동 생성"
-            transcript_info.append(f"{transcript.language} ({transcript.language_code}) - {transcript_type}")
+            if transcript.is_generated == 0:  # get youtube subtitle
+                fetched = transcript.fetch()
+                successful_transcript = transcript
+                st.success("✅ 수동 자막 발견!")
+                break
         
-        # 사용된 자막 정보 (첫 번째 자막으로 가정)
-        first_transcript = list(transcript_list)[0]
+        # 2단계: 수동 자막이 없으면 자동 생성 자막 사용 - 원본 코드와 동일
+        if fetched is None:
+            for transcript in transcript_list:
+                if transcript.is_generated == 1:
+                    fetched = transcript.fetch()
+                    successful_transcript = transcript
+                    st.info("✅ 자동 생성 자막 사용")
+                    break
         
-        # 자막 텍스트 합치기 (따옴표 제거)
+        if fetched is None:
+            return None, "이 비디오에는 사용 가능한 자막이 없습니다.", None
+        
+        # 원본 코드와 동일한 방식으로 텍스트 합치기
         output = ''
-        for f in transcript_data:
-            text = f.text.replace("'", "").replace('"', '')
-            output += text + ' '
+        for f in fetched:
+            output += f.text + ' '  # 원본과 동일
         
         # 성공 정보 반환
         success_info = {
-            'language': first_transcript.language,
-            'language_code': first_transcript.language_code,
-            'type': '수동 작성' if first_transcript.is_generated == 0 else '자동 생성',
-            'segments': len(transcript_data),
+            'language': successful_transcript.language,
+            'language_code': successful_transcript.language_code,
+            'type': '수동 작성' if successful_transcript.is_generated == 0 else '자동 생성',
+            'segments': len(fetched),
             'total_chars': len(output.strip()),
-            'available_transcripts': transcript_info
+            'method': '직접 요청',
+            'available_transcripts': [f"{t.language} ({t.language_code}) - {'수동' if t.is_generated == 0 else '자동'}" for t in transcript_list]
         }
         
         return output.strip(), None, success_info
         
     except Exception as e:
-        detailed_error = f"자막 목록 가져오기 실패: {str(e)}\n\n가능한 원인:\n1. IP 차단 (IP 우회 활성화 권장)\n2. 잘못된 비디오 ID\n3. 비공개/삭제된 비디오\n4. 네트워크 오류"
-        return None, detailed_error, None
+        error_msg = f"자막 가져오기 실패: {str(e)}"
+        
+        # IP 차단 감지
+        if any(keyword in str(e).lower() for keyword in ['blocking', 'blocked', 'ip']):
+            if not use_bypass:
+                error_msg += "\n\n💡 IP 차단이 감지되었습니다. '🚀 IP 우회 활성화'를 체크하고 다시 시도하세요."
+        
+        return None, error_msg, None
 
 def summarize_text(text, api_key):
     """Gemini를 사용한 텍스트 요약"""
@@ -327,10 +326,11 @@ def main():
         
         if transcript and info:
             # 성공 메시지를 간결하게 표시
-            st.success(f"✅ 자막 추출 성공! ({info['type']}, {info['total_chars']:,}자)")
+            st.success(f"✅ 자막 추출 성공! ({info['method']}, {info['type']}, {info['total_chars']:,}자)")
             
             # 세부 정보는 expander로 접기
             with st.expander("📊 자막 상세 정보"):
+                st.write(f"**사용된 방법**: {info['method']}")
                 st.write(f"**사용된 자막**: {info['language']} ({info['language_code']}) - {info['type']}")
                 st.write(f"**세그먼트 수**: {info['segments']:,}개")
                 st.write(f"**총 글자 수**: {info['total_chars']:,}자")
