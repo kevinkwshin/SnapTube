@@ -502,7 +502,6 @@
 
 # if __name__ == "__main__":
 #     main()
-
 import streamlit as st
 import googleapiclient.discovery
 from google.oauth2.credentials import Credentials
@@ -511,19 +510,25 @@ from google.genai import types
 from google import genai
 import re
 import json
+import tempfile
 import os
 from urllib.parse import urlparse, parse_qs
 
-# OAuth2 설정
-CLIENT_SECRETS = {
-    "web": {
-        "client_id": "YOUR_CLIENT_ID.apps.googleusercontent.com",
-        "client_secret": "YOUR_CLIENT_SECRET",
-        "redirect_uris": ["http://localhost:8501"],
-        "auth_uri": "https://accounts.google.com/o/oauth2/auth",
-        "token_uri": "https://oauth2.googleapis.com/token"
-    }
-}
+# Streamlit Secrets에서 OAuth2 설정 가져오기
+def get_client_secrets():
+    """Streamlit secrets에서 OAuth2 클라이언트 정보 가져오기"""
+    try:
+        return {
+            "web": {
+                "client_id": st.secrets["google_oauth"]["client_id"],
+                "client_secret": st.secrets["google_oauth"]["client_secret"],
+                "redirect_uris": ["http://localhost:8501"],
+                "auth_uri": "https://accounts.google.com/o/oauth2/auth",
+                "token_uri": "https://oauth2.googleapis.com/token"
+            }
+        }
+    except KeyError:
+        return None
 
 SCOPES = ['https://www.googleapis.com/auth/youtube.force-ssl']
 
@@ -541,48 +546,51 @@ def extract_video_id(url):
 
 def get_oauth2_url():
     """Generate OAuth2 authorization URL"""
+    client_secrets = get_client_secrets()
+    if not client_secrets:
+        raise Exception("OAuth2 클라이언트 정보가 설정되지 않았습니다")
+    
     # Create temporary file for client secrets
-    with open('client_secrets.json', 'w') as f:
-        json.dump(CLIENT_SECRETS, f)
+    with tempfile.NamedTemporaryFile(mode='w', suffix='.json', delete=False) as f:
+        json.dump(client_secrets, f)
+        temp_file = f.name
     
-    flow = Flow.from_client_secrets_file(
-        'client_secrets.json',
-        scopes=SCOPES,
-        redirect_uri='http://localhost:8501'
-    )
-    
-    auth_url, _ = flow.authorization_url(prompt='consent')
-    
-    # Clean up
-    if os.path.exists('client_secrets.json'):
-        os.remove('client_secrets.json')
-    
-    return auth_url, flow
+    try:
+        flow = Flow.from_client_secrets_file(
+            temp_file,
+            scopes=SCOPES,
+            redirect_uri='http://localhost:8501'
+        )
+        
+        auth_url, _ = flow.authorization_url(prompt='consent')
+        return auth_url, flow
+    finally:
+        # Clean up temporary file
+        if os.path.exists(temp_file):
+            os.remove(temp_file)
 
 def exchange_code_for_token(auth_code):
     """Exchange authorization code for access token"""
-    with open('client_secrets.json', 'w') as f:
-        json.dump(CLIENT_SECRETS, f)
+    client_secrets = get_client_secrets()
+    if not client_secrets:
+        raise Exception("OAuth2 클라이언트 정보가 설정되지 않았습니다")
     
-    flow = Flow.from_client_secrets_file(
-        'client_secrets.json',
-        scopes=SCOPES,
-        redirect_uri='http://localhost:8501'
-    )
+    with tempfile.NamedTemporaryFile(mode='w', suffix='.json', delete=False) as f:
+        json.dump(client_secrets, f)
+        temp_file = f.name
     
     try:
+        flow = Flow.from_client_secrets_file(
+            temp_file,
+            scopes=SCOPES,
+            redirect_uri='http://localhost:8501'
+        )
+        
         flow.fetch_token(code=auth_code)
-        credentials = flow.credentials
-        
-        # Clean up
-        if os.path.exists('client_secrets.json'):
-            os.remove('client_secrets.json')
-        
-        return credentials
-    except Exception as e:
-        if os.path.exists('client_secrets.json'):
-            os.remove('client_secrets.json')
-        raise e
+        return flow.credentials
+    finally:
+        if os.path.exists(temp_file):
+            os.remove(temp_file)
 
 def parse_srt_content(srt_content):
     """Parse SRT content and extract clean text"""
@@ -716,39 +724,43 @@ def main():
     )
     
     st.title("📺 SnapTube: YouTube Transcript Summarizer")
-    st.write("**OAuth2 인증 버전** - YouTube 자막 다운로드 지원!")
+    st.write("**Streamlit Secrets 버전** - 안전한 OAuth2 인증!")
     
-    # OAuth2 Setup Warning
-    if (CLIENT_SECRETS["web"]["client_id"] == "YOUR_CLIENT_ID.apps.googleusercontent.com" or
-        CLIENT_SECRETS["web"]["client_secret"] == "YOUR_CLIENT_SECRET"):
-        st.error("⚠️ 개발자: OAuth2 클라이언트 정보를 설정해주세요!")
+    # Check if secrets are configured
+    client_secrets = get_client_secrets()
+    if not client_secrets:
+        st.error("⚠️ OAuth2 클라이언트 정보가 설정되지 않았습니다!")
         
-        with st.expander("🔧 OAuth2 설정 방법", expanded=True):
+        with st.expander("🔧 Streamlit Secrets 설정 방법", expanded=True):
             st.markdown("""
-            ### 1단계: Google Cloud Console 설정
-            1. [Google Cloud Console](https://console.cloud.google.com/) 접속
-            2. 프로젝트 생성 또는 선택
-            3. **YouTube Data API v3** 활성화
-            4. **OAuth 2.0 클라이언트 ID** 생성:
-               - 사용자 인증 정보 → OAuth 2.0 클라이언트 ID
-               - 애플리케이션 유형: **웹 애플리케이션**
-               - 승인된 리디렉션 URI: `http://localhost:8501`
-            
-            ### 2단계: 코드에 정보 입력
-            ```python
-            CLIENT_SECRETS = {
-                "web": {
-                    "client_id": "your-client-id.apps.googleusercontent.com",
-                    "client_secret": "your-client-secret",
-                    # 나머지는 그대로
-                }
-            }
+            ### 로컬 개발 환경
+            1. `.streamlit/secrets.toml` 파일 생성:
+            ```toml
+            [google_oauth]
+            client_id = "your-client-id.apps.googleusercontent.com"
+            client_secret = "your-client-secret"
             ```
             
-            ### 왜 OAuth2가 필요한가요?
-            - YouTube Data API에서 자막 **다운로드**는 OAuth2 인증 필요
-            - API 키로는 자막 **목록만** 조회 가능
-            - 보안상 사용자 인증이 필요한 기능
+            ### Streamlit Community Cloud
+            1. GitHub 리포지토리에 앱 배포
+            2. Streamlit Community Cloud에서 앱 설정 → **Secrets** 탭
+            3. 다음 내용 입력:
+            ```toml
+            [google_oauth]
+            client_id = "your-client-id.apps.googleusercontent.com"
+            client_secret = "your-client-secret"
+            ```
+            
+            ### OAuth2 클라이언트 ID 생성
+            1. [Google Cloud Console](https://console.cloud.google.com/) 접속
+            2. 프로젝트 생성 → YouTube Data API v3 활성화
+            3. 사용자 인증 정보 → OAuth 2.0 클라이언트 ID 생성
+            4. 웹 애플리케이션 → 리디렉션 URI: `http://localhost:8501`
+            
+            ### 🔒 보안 장점
+            - GitHub에 민감한 정보가 노출되지 않음
+            - Streamlit이 안전하게 관리
+            - 배포 환경에서도 동일하게 작동
             """)
         return
     
@@ -875,6 +887,15 @@ def main():
                 
             except Exception as e:
                 st.error(f"❌ 오류: {str(e)}")
+
+    # Footer
+    st.markdown("---")
+    st.markdown("""
+    **🔒 보안 정보:**
+    - OAuth2 클라이언트 정보는 Streamlit Secrets로 안전하게 관리
+    - GitHub에 민감한 정보가 노출되지 않음
+    - 프로덕션 환경에서 권장되는 방법
+    """)
 
 if __name__ == "__main__":
     main()
