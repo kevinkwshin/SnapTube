@@ -508,9 +508,10 @@ import googleapiclient.discovery
 from google import genai
 from google.genai import types
 import re
-import requests
-import xml.etree.ElementTree as ET
 from urllib.parse import urlparse, parse_qs
+
+# YouTube Data API Key (여기에 본인의 API 키를 입력하세요)
+YOUTUBE_API_KEY = "YOUR_YOUTUBE_DATA_API_KEY_HERE"
 
 def extract_video_id(url):
     """Extract video ID from various YouTube URL formats"""
@@ -522,13 +523,26 @@ def extract_video_id(url):
     elif "youtube.com/embed/" in url:
         return url.split("embed/")[1].split("?")[0]
     else:
+        # Assume it's already a video ID
         return url.strip()
 
-def get_transcript_youtube_api(video_id, youtube_api_key):
-    """Get transcript using YouTube Data API v3 - 가장 안정적인 방법"""
+def parse_srt_content(srt_content):
+    """Parse SRT content and extract clean text"""
+    # Remove SRT formatting (timestamps, sequence numbers)
+    text = re.sub(r'\d+\n\d{2}:\d{2}:\d{2},\d{3} --> \d{2}:\d{2}:\d{2},\d{3}\n', '', srt_content)
+    # Remove sequence numbers at the beginning of blocks
+    text = re.sub(r'\n\d+\n', '\n', text)
+    # Clean up multiple newlines
+    text = re.sub(r'\n+', ' ', text)
+    # Remove HTML tags if any
+    text = re.sub(r'<[^>]+>', '', text)
+    return text.strip()
+
+def get_transcript(video_id):
+    """Get transcript using YouTube Data API v3"""
     try:
         # Build YouTube service
-        youtube = googleapiclient.discovery.build("youtube", "v3", developerKey=youtube_api_key)
+        youtube = googleapiclient.discovery.build("youtube", "v3", developerKey=YOUTUBE_API_KEY)
         
         # Get caption tracks
         st.info("📋 자막 트랙 목록 가져오는 중...")
@@ -545,6 +559,7 @@ def get_transcript_youtube_api(video_id, youtube_api_key):
         # Find the best caption (prefer manual over auto-generated, English over others)
         caption_id = None
         caption_language = None
+        caption_type = None
         
         # Priority: Manual English > Auto English > Manual other > Auto other
         for priority in ['manual_en', 'auto_en', 'manual_other', 'auto_other']:
@@ -556,18 +571,22 @@ def get_transcript_youtube_api(video_id, youtube_api_key):
                 if priority == 'manual_en' and not is_auto and language.startswith('en'):
                     caption_id = caption["id"]
                     caption_language = language
+                    caption_type = "수동 작성"
                     break
                 elif priority == 'auto_en' and is_auto and language.startswith('en'):
                     caption_id = caption["id"]
                     caption_language = language
+                    caption_type = "자동 생성"
                     break
                 elif priority == 'manual_other' and not is_auto:
                     caption_id = caption["id"]
                     caption_language = language
+                    caption_type = "수동 작성"
                     break
                 elif priority == 'auto_other' and is_auto:
                     caption_id = caption["id"]
                     caption_language = language
+                    caption_type = "자동 생성"
                     break
             
             if caption_id:
@@ -576,7 +595,7 @@ def get_transcript_youtube_api(video_id, youtube_api_key):
         if not caption_id:
             return None, "적합한 자막을 찾을 수 없습니다."
         
-        st.info(f"🎯 사용할 자막: {caption_language} ({'자동생성' if snippet.get('trackKind') == 'ASR' else '수동작성'})")
+        st.info(f"🎯 사용할 자막: {caption_language} ({caption_type})")
         
         # Download caption
         st.info("📥 자막 다운로드 중...")
@@ -591,79 +610,9 @@ def get_transcript_youtube_api(video_id, youtube_api_key):
         clean_text = parse_srt_content(caption_text)
         
         return clean_text, None
-    
+        
     except Exception as e:
         return None, f"YouTube Data API 오류: {str(e)}"
-
-def parse_srt_content(srt_content):
-    """Parse SRT content and extract clean text"""
-    import re
-    
-    # Remove SRT formatting (timestamps, sequence numbers)
-    # Pattern to match SRT timestamp lines
-    text = re.sub(r'\d+\n\d{2}:\d{2}:\d{2},\d{3} --> \d{2}:\d{2}:\d{2},\d{3}\n', '', srt_content)
-    # Remove sequence numbers at the beginning of blocks
-    text = re.sub(r'\n\d+\n', '\n', text)
-    # Clean up multiple newlines
-    text = re.sub(r'\n+', ' ', text)
-    # Remove HTML tags if any
-    text = re.sub(r'<[^>]+>', '', text)
-    
-    return text.strip()
-
-def get_transcript_alternative_method(video_id):
-    """대안 방법: 직접 API 호출 (제한적)"""
-    try:
-        st.info("🔄 대안 방법으로 자막 가져오기 시도 중...")
-        
-        # YouTube의 timedtext API 사용 (공식적이지 않음)
-        languages = ['en', 'ko', 'en-US', 'en-GB']
-        
-        for lang in languages:
-            try:
-                url = f"https://www.youtube.com/api/timedtext?lang={lang}&v={video_id}"
-                response = requests.get(url, timeout=10)
-                
-                if response.status_code == 200 and response.content:
-                    # Parse XML response
-                    root = ET.fromstring(response.content)
-                    text_parts = []
-                    
-                    for text_elem in root.findall('.//text'):
-                        if text_elem.text:
-                            text_parts.append(text_elem.text.strip())
-                    
-                    if text_parts:
-                        return ' '.join(text_parts), None
-            
-            except Exception as e:
-                continue
-        
-        return None, "대안 방법으로도 자막을 가져올 수 없습니다."
-    
-    except Exception as e:
-        return None, f"대안 방법 오류: {str(e)}"
-
-def get_transcript(video_id, youtube_api_key=None, use_alternative=False):
-    """통합 자막 가져오기 함수"""
-    
-    # Method 1: YouTube Data API v3 (권장)
-    if youtube_api_key and not use_alternative:
-        transcript, error = get_transcript_youtube_api(video_id, youtube_api_key)
-        if transcript:
-            return transcript, None
-        else:
-            st.warning(f"YouTube Data API 실패: {error}")
-    
-    # Method 2: Alternative method
-    if use_alternative or not youtube_api_key:
-        transcript, error = get_transcript_alternative_method(video_id)
-        if transcript:
-            return transcript, None
-        else:
-            st.warning(f"대안 방법 실패: {error}")
-    
-    return None, "모든 방법이 실패했습니다."
 
 def summarize_text(text, api_key):
     """Summarize text using Google Gemini API"""
@@ -682,28 +631,7 @@ def summarize_text(text, api_key):
                 role="user",
                 parts=[
                     types.Part.from_text(
-                        text=f'''다음 YouTube 비디오 트랜스크립트를 분석하여 포괄적인 요약을 작성해주세요:
-
-{text}
-
-다음 형식으로 구성해주세요:
-## 📌 주요 주제
-[비디오의 메인 주제나 테마]
-
-## 🔑 핵심 포인트
-1. [첫 번째 주요 포인트]
-2. [두 번째 주요 포인트]
-3. [세 번째 주요 포인트]
-4. [네 번째 주요 포인트]
-5. [다섯 번째 주요 포인트]
-
-## 📋 중요한 세부사항
-[구체적인 예시, 데이터, 또는 언급된 중요한 정보들]
-
-## 💡 결론 및 시사점
-[비디오의 주요 메시지나 시청자가 얻을 수 있는 교훈]
-
-명확하고 읽기 쉽게 한국어로 작성해주세요.'''
+                        text=f'다음 YouTube 비디오 트랜스크립트를 분석하여 포괄적인 요약을 작성해주세요:\n\n{text}\n\n다음 형식으로 구성해주세요:\n## 📌 주요 주제\n[비디오의 메인 주제나 테마]\n\n## 🔑 핵심 포인트\n1. [첫 번째 주요 포인트]\n2. [두 번째 주요 포인트]\n3. [세 번째 주요 포인트]\n4. [네 번째 주요 포인트]\n5. [다섯 번째 주요 포인트]\n\n## 📋 중요한 세부사항\n[구체적인 예시, 데이터, 또는 언급된 중요한 정보들]\n\n## 💡 결론 및 시사점\n[비디오의 주요 메시지나 시청자가 얻을 수 있는 교훈]\n\n명확하고 읽기 쉽게 한국어로 작성해주세요.'
                     ),
                 ],
             ),
@@ -712,7 +640,7 @@ def summarize_text(text, api_key):
         generate_content_config = types.GenerateContentConfig(
             response_mime_type="text/plain",
             system_instruction='당신은 전문적인 콘텐츠 요약 전문가입니다. 명확하고 구조화된 요약을 제공하며, 독자가 쉽게 이해할 수 있도록 작성합니다.',
-            temperature=0.2
+            temperature=0.1
         )
         
         response = client.models.generate_content(
@@ -728,84 +656,51 @@ def summarize_text(text, api_key):
 
 def main():
     st.set_page_config(
-        page_title="SnapTube: YouTube Transcript Summarizer", 
+        page_title="SnapTube: YouTube Transcript Summarizer",
         page_icon="📺",
         layout="wide"
     )
     
     st.title("📺 SnapTube: YouTube Transcript Summarizer")
-    st.write("**YouTube Data API v3 버전** - IP 차단 문제 완전 해결!")
+    st.write("**YouTube Data API v3 버전** - IP 차단 문제 해결!")
     
-    # Instructions
-    with st.expander("📋 사용 방법 및 API 키 발급", expanded=False):
-        st.markdown("""
-        ### 1️⃣ Gemini API 키 발급
-        - [Google AI Studio](https://makersuite.google.com/app/apikey)에서 무료로 발급
-        - 월 60회 요청 제한 (무료)
-        
-        ### 2️⃣ YouTube Data API v3 키 발급 (권장)
-        - [Google Cloud Console](https://console.cloud.google.com/)에서 발급
-        - YouTube Data API v3 활성화 필요
-        - 일일 10,000 쿼터 (무료)
-        
-        ### 3️⃣ 사용법
-        1. 두 API 키를 모두 입력 (YouTube API는 선택사항)
-        2. YouTube 비디오 URL 입력
-        3. 요약 생성 버튼 클릭
-        
-        **YouTube Data API가 없어도 대안 방법으로 시도합니다!**
-        """)
+    # API Key 확인
+    if YOUTUBE_API_KEY == "YOUR_YOUTUBE_DATA_API_KEY_HERE":
+        st.error("⚠️ 개발자: YouTube Data API 키를 설정해주세요!")
+        st.code("YOUTUBE_API_KEY = 'your_actual_api_key_here'")
+        return
     
-    # API Keys
-    st.subheader("🔑 API 키 설정")
-    col1, col2 = st.columns(2)
+    # Gemini API Key input
+    st.subheader("🔑 Gemini API 키 입력")
+    api_key = st.text_input(
+        "Gemini API Key를 입력하세요", 
+        type="password",
+        help="Google AI Studio에서 발급받으세요: https://makersuite.google.com/app/apikey"
+    )
     
-    with col1:
-        gemini_api_key = st.text_input(
-            "Gemini API Key 입력 (필수)", 
-            type="password",
-            help="Google AI Studio에서 발급받으세요"
-        )
-    
-    with col2:
-        youtube_api_key = st.text_input(
-            "YouTube Data API Key 입력 (권장)", 
-            type="password",
-            help="Google Cloud Console에서 발급받으세요. 없으면 대안 방법 사용"
-        )
-    
-    # Video input
-    st.subheader("🎥 비디오 설정")
+    # Video URL/ID input
+    st.subheader("🎥 YouTube 비디오")
     video_input = st.text_input(
-        "YouTube 비디오 URL 또는 비디오 ID 입력",
-        placeholder="https://www.youtube.com/watch?v=_wUoLrYyJBg",
-        help="전체 URL 또는 비디오 ID만 입력해도 됩니다"
+        "YouTube 비디오 URL 또는 비디오 ID를 입력하세요",
+        placeholder="https://www.youtube.com/watch?v=VIDEO_ID"
     )
     
     # Options
-    col3, col4 = st.columns(2)
-    with col3:
-        use_alternative = st.checkbox(
-            "대안 방법 사용", 
-            help="YouTube Data API 대신 대안 방법 사용 (YouTube API 키가 없을 때)"
-        )
-    
-    with col4:
+    col1, col2 = st.columns(2)
+    with col1:
         show_transcript = st.checkbox("원본 자막 표시", value=True)
+    with col2:
+        st.write("")  # spacing
     
-    # Generate button
-    if st.button("🚀 요약 생성하기", type="primary", use_container_width=True):
-        if not gemini_api_key:
-            st.error("❌ Gemini API Key는 필수입니다!")
+    # Generate Summary button
+    if st.button("🚀 요약 생성", type="primary", use_container_width=True):
+        if not api_key:
+            st.error("❌ Gemini API Key를 입력해주세요!")
             return
             
         if not video_input:
-            st.error("❌ YouTube 비디오 URL을 입력해주세요!")
+            st.error("❌ YouTube 비디오 URL 또는 비디오 ID를 입력해주세요!")
             return
-        
-        if not youtube_api_key and not use_alternative:
-            st.warning("⚠️ YouTube Data API 키가 없어 대안 방법을 시도합니다.")
-            use_alternative = True
         
         try:
             # Extract video ID
@@ -814,33 +709,31 @@ def main():
             
             # Get transcript
             with st.spinner("📄 자막 가져오는 중..."):
-                transcript, error = get_transcript(
-                    video_id, 
-                    youtube_api_key if not use_alternative else None, 
-                    use_alternative
-                )
+                transcript, error = get_transcript(video_id)
             
-            if error or not transcript:
+            if error:
                 st.error(f"❌ 자막 가져오기 실패: {error}")
                 
-                # Troubleshooting guide
+                # Show troubleshooting guide
                 with st.expander("🔧 문제 해결 가이드"):
                     st.markdown("""
                     ### 가능한 원인:
                     1. **자막이 없는 비디오**: 일부 비디오는 자막이 제공되지 않습니다
                     2. **비공개/제한된 비디오**: 접근할 수 없는 비디오입니다
                     3. **API 할당량 초과**: YouTube Data API 일일 한도를 초과했습니다
+                    4. **잘못된 비디오 ID**: URL이나 ID를 다시 확인해주세요
                     
                     ### 해결 방법:
-                    1. ✅ **다른 비디오로 테스트** (자막이 있는 비디오)
-                    2. 🔄 **대안 방법 체크박스 활성화**
+                    1. ✅ **다른 비디오로 테스트** (자막이 있는 공개 비디오)
+                    2. 📺 **TED Talks나 교육 비디오** 시도 (자막이 잘 제공됨)
                     3. ⏰ **잠시 후 다시 시도** (API 할당량 리셋 대기)
-                    4. 🔑 **YouTube Data API 키 확인** (올바른 키인지 확인)
+                    4. 🔑 **YouTube Data API 키 확인** (올바른 키이고 활성화되었는지)
                     
-                    ### 추천 테스트 비디오:
-                    - TED Talks (자막이 항상 제공됨)
-                    - 교육 채널 영상들
-                    - 인기 있는 공개 비디오들
+                    ### API 키 발급 방법:
+                    1. [Google Cloud Console](https://console.cloud.google.com/) 접속
+                    2. 프로젝트 생성 또는 선택
+                    3. YouTube Data API v3 활성화
+                    4. 자격 증명 → API 키 생성
                     """)
                 return
                 
@@ -849,12 +742,12 @@ def main():
                 
                 # Show original transcript if enabled
                 if show_transcript:
-                    with st.expander("📜 원본 자막 보기"):
-                        st.text_area("전체 자막", transcript, height=200)
+                    st.subheader("📜 원본 자막")
+                    st.text_area("전체 자막", transcript, height=200)
                 
                 # Generate summary
                 with st.spinner("🤖 AI 요약 생성 중..."):
-                    summary, error = summarize_text(transcript, gemini_api_key)
+                    summary, error = summarize_text(transcript, api_key)
                 
                 if error:
                     st.error(f"❌ 요약 생성 실패: {error}")
@@ -865,8 +758,8 @@ def main():
                     st.markdown(summary)
                     
                     # Download options
-                    col5, col6 = st.columns(2)
-                    with col5:
+                    col3, col4 = st.columns(2)
+                    with col3:
                         st.download_button(
                             label="📥 요약 다운로드 (Markdown)",
                             data=summary,
@@ -874,7 +767,7 @@ def main():
                             mime="text/markdown"
                         )
                     
-                    with col6:
+                    with col4:
                         st.download_button(
                             label="📥 원본 자막 다운로드",
                             data=transcript,
@@ -888,14 +781,41 @@ def main():
             st.error(f"❌ 예상치 못한 오류가 발생했습니다: {str(e)}")
             st.info("문제가 지속되면 다른 비디오로 시도해보세요.")
 
-    # Footer info
+    # Instructions
+    with st.expander("📋 사용 방법 및 API 키 발급 가이드"):
+        st.markdown("""
+        ### 🔑 Gemini API 키 발급
+        1. [Google AI Studio](https://makersuite.google.com/app/apikey)에서 무료로 발급
+        2. Google 계정으로 로그인
+        3. "Create API Key" 클릭
+        4. 생성된 키를 복사해서 위에 입력
+        
+        ### 🎯 사용법
+        1. Gemini API 키 입력
+        2. YouTube 비디오 URL 입력 (전체 URL 또는 비디오 ID만)
+        3. 요약 생성 버튼 클릭
+        4. 결과 확인 및 다운로드
+        
+        ### 📺 추천 테스트 비디오
+        - TED Talks (자막이 항상 제공됨)
+        - 교육 채널 영상들 (Khan Academy, Crash Course 등)
+        - 인기 있는 공개 비디오들
+        
+        ### ⚠️ 주의사항
+        - YouTube Data API 일일 할당량: 10,000 쿼터
+        - 일부 비디오는 자막이 없을 수 있습니다
+        - 비공개 또는 제한된 비디오는 접근 불가
+        """)
+
+    # Footer
     st.markdown("---")
     st.markdown("""
-    **💡 팁:**
-    - YouTube Data API v3 사용 시 가장 안정적입니다
-    - 대안 방법은 일부 비디오에서만 작동할 수 있습니다
-    - TED Talks나 교육 비디오는 자막이 잘 제공됩니다
-    - API 할당량을 절약하려면 같은 비디오를 반복 요청하지 마세요
+    **💡 이 버전의 장점:**
+    - ✅ IP 차단 문제 완전 해결
+    - ✅ 공식 YouTube Data API v3 사용
+    - ✅ 안정적이고 신뢰할 수 있음
+    - ✅ 자막 품질 선택 (수동 > 자동생성)
+    - ✅ 다양한 언어 지원
     """)
 
 if __name__ == "__main__":
