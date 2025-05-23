@@ -528,44 +528,67 @@ def get_transcript(video_id):
         ytt_api = YouTubeTranscriptApi()
         
         # 사용 가능한 자막 목록 가져오기
+        st.info("📋 자막 목록 확인 중...")
         transcript_list = ytt_api.list(video_id)
         
+        # 사용 가능한 자막 정보 표시
+        st.write("**사용 가능한 자막:**")
+        for transcript in transcript_list:
+            transcript_type = "수동 작성" if transcript.is_generated == 0 else "자동 생성"
+            st.write(f"- {transcript.language} ({transcript.language_code}) - {transcript_type}")
+        
         fetched = None
+        successful_transcript = None
+        errors = []
         
         # 1단계: 수동 작성된 자막 찾기 (is_generated == 0)
+        st.info("🔍 수동 작성 자막 검색 중...")
         for transcript in transcript_list:
             if transcript.is_generated == 0:  # 수동 자막
                 try:
                     fetched = transcript.fetch()
+                    successful_transcript = transcript
                     st.success(f"✅ 수동 자막 발견: {transcript.language} ({transcript.language_code})")
                     break
-                except:
+                except Exception as e:
+                    error_msg = f"수동 자막 {transcript.language} 실패: {str(e)}"
+                    errors.append(error_msg)
+                    st.warning(f"⚠️ {error_msg}")
                     continue
         
         # 2단계: 수동 자막이 없으면 자동 생성 자막 사용 (is_generated == 1)
         if fetched is None:
+            st.info("🔍 자동 생성 자막 검색 중...")
             for transcript in transcript_list:
                 if transcript.is_generated == 1:  # 자동 생성 자막
                     try:
                         fetched = transcript.fetch()
+                        successful_transcript = transcript
                         st.info(f"ℹ️ 자동 생성 자막 사용: {transcript.language} ({transcript.language_code})")
                         break
-                    except:
+                    except Exception as e:
+                        error_msg = f"자동 자막 {transcript.language} 실패: {str(e)}"
+                        errors.append(error_msg)
+                        st.warning(f"⚠️ {error_msg}")
                         continue
         
         # 자막이 없는 경우
         if fetched is None:
-            return None, "이 비디오에는 사용 가능한 자막이 없습니다."
+            detailed_error = f"모든 자막 가져오기 실패.\n\n세부 오류:\n" + "\n".join(errors)
+            return None, detailed_error
         
         # 자막 텍스트 합치기
         output = ''
         for f in fetched:
             output += f.text + ' '
         
+        st.info(f"📊 자막 정보: {len(fetched)}개 세그먼트, 총 {len(output.strip())}자")
+        
         return output.strip(), None
         
     except Exception as e:
-        return None, str(e)
+        detailed_error = f"자막 목록 가져오기 실패: {str(e)}\n\n가능한 원인:\n1. 잘못된 비디오 ID\n2. 비공개/삭제된 비디오\n3. IP 차단\n4. 네트워크 오류"
+        return None, detailed_error
 
 def summarize_text(text, api_key):
     """Gemini를 사용한 텍스트 요약"""
