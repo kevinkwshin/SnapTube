@@ -505,14 +505,27 @@
 
 import streamlit as st
 import googleapiclient.discovery
-from google import genai
+from google.oauth2.credentials import Credentials
+from google_auth_oauthlib.flow import Flow
 from google.genai import types
+from google import genai
 import re
+import json
+import os
 from urllib.parse import urlparse, parse_qs
 
-# YouTube Data API Key (여기에 본인의 API 키를 입력하세요)
-YOUTUBE_API_KEY = "YOUR_YOUTUBE_DATA_API_KEY_HERE"
-YOUTUBE_API_KEY = "AIzaSyA_EiI2xe7fqL1xG44QQKAhzHq7Zx42HJY"
+# OAuth2 설정
+CLIENT_SECRETS = {
+    "web": {
+        "client_id": "YOUR_CLIENT_ID.apps.googleusercontent.com",
+        "client_secret": "YOUR_CLIENT_SECRET",
+        "redirect_uris": ["http://localhost:8501"],
+        "auth_uri": "https://accounts.google.com/o/oauth2/auth",
+        "token_uri": "https://oauth2.googleapis.com/token"
+    }
+}
+
+SCOPES = ['https://www.googleapis.com/auth/youtube.force-ssl']
 
 def extract_video_id(url):
     """Extract video ID from various YouTube URL formats"""
@@ -524,26 +537,69 @@ def extract_video_id(url):
     elif "youtube.com/embed/" in url:
         return url.split("embed/")[1].split("?")[0]
     else:
-        # Assume it's already a video ID
         return url.strip()
+
+def get_oauth2_url():
+    """Generate OAuth2 authorization URL"""
+    # Create temporary file for client secrets
+    with open('client_secrets.json', 'w') as f:
+        json.dump(CLIENT_SECRETS, f)
+    
+    flow = Flow.from_client_secrets_file(
+        'client_secrets.json',
+        scopes=SCOPES,
+        redirect_uri='http://localhost:8501'
+    )
+    
+    auth_url, _ = flow.authorization_url(prompt='consent')
+    
+    # Clean up
+    if os.path.exists('client_secrets.json'):
+        os.remove('client_secrets.json')
+    
+    return auth_url, flow
+
+def exchange_code_for_token(auth_code):
+    """Exchange authorization code for access token"""
+    with open('client_secrets.json', 'w') as f:
+        json.dump(CLIENT_SECRETS, f)
+    
+    flow = Flow.from_client_secrets_file(
+        'client_secrets.json',
+        scopes=SCOPES,
+        redirect_uri='http://localhost:8501'
+    )
+    
+    try:
+        flow.fetch_token(code=auth_code)
+        credentials = flow.credentials
+        
+        # Clean up
+        if os.path.exists('client_secrets.json'):
+            os.remove('client_secrets.json')
+        
+        return credentials
+    except Exception as e:
+        if os.path.exists('client_secrets.json'):
+            os.remove('client_secrets.json')
+        raise e
 
 def parse_srt_content(srt_content):
     """Parse SRT content and extract clean text"""
-    # Remove SRT formatting (timestamps, sequence numbers)
     text = re.sub(r'\d+\n\d{2}:\d{2}:\d{2},\d{3} --> \d{2}:\d{2}:\d{2},\d{3}\n', '', srt_content)
-    # Remove sequence numbers at the beginning of blocks
     text = re.sub(r'\n\d+\n', '\n', text)
-    # Clean up multiple newlines
     text = re.sub(r'\n+', ' ', text)
-    # Remove HTML tags if any
     text = re.sub(r'<[^>]+>', '', text)
     return text.strip()
 
-def get_transcript(video_id):
-    """Get transcript using YouTube Data API v3"""
+def get_transcript_with_oauth(video_id, credentials):
+    """Get transcript using OAuth2 authenticated YouTube API"""
     try:
-        # Build YouTube service
-        youtube = googleapiclient.discovery.build("youtube", "v3", developerKey=YOUTUBE_API_KEY)
+        # Build YouTube service with OAuth2 credentials
+        youtube = googleapiclient.discovery.build(
+            "youtube", "v3", 
+            credentials=credentials
+        )
         
         # Get caption tracks
         st.info("📋 자막 트랙 목록 가져오는 중...")
@@ -557,7 +613,7 @@ def get_transcript(video_id):
         
         st.success(f"✅ {len(captions_response['items'])}개의 자막 트랙을 찾았습니다!")
         
-        # Find the best caption (prefer manual over auto-generated, English over others)
+        # Find the best caption
         caption_id = None
         caption_language = None
         caption_type = None
@@ -598,16 +654,14 @@ def get_transcript(video_id):
         
         st.info(f"🎯 사용할 자막: {caption_language} ({caption_type})")
         
-        # Download caption
+        # Download caption with OAuth2
         st.info("📥 자막 다운로드 중...")
         caption_response = youtube.captions().download(
             id=caption_id,
-            tfmt="srt"  # SubRip format
+            tfmt="srt"
         ).execute()
         
         caption_text = caption_response.decode('utf-8')
-        
-        # Parse SRT content to extract just the text
         clean_text = parse_srt_content(caption_text)
         
         return clean_text, None
@@ -621,7 +675,6 @@ def summarize_text(text, api_key):
         client = genai.Client(api_key=api_key)
         model = "gemini-2.0-flash-exp"
         
-        # Limit text length to avoid token limits
         max_length = 15000
         if len(text) > max_length:
             text = text[:max_length] + "..."
@@ -632,7 +685,7 @@ def summarize_text(text, api_key):
                 role="user",
                 parts=[
                     types.Part.from_text(
-                        text=f'다음 YouTube 비디오 트랜스크립트를 분석하여 포괄적인 요약을 작성해주세요:\n\n{text}\n\n다음 형식으로 구성해주세요:\n## 📌 주요 주제\n[비디오의 메인 주제나 테마]\n\n## 🔑 핵심 포인트\n1. [첫 번째 주요 포인트]\n2. [두 번째 주요 포인트]\n3. [세 번째 주요 포인트]\n4. [네 번째 주요 포인트]\n5. [다섯 번째 주요 포인트]\n\n## 📋 중요한 세부사항\n[구체적인 예시, 데이터, 또는 언급된 중요한 정보들]\n\n## 💡 결론 및 시사점\n[비디오의 주요 메시지나 시청자가 얻을 수 있는 교훈]\n\n명확하고 읽기 쉽게 한국어로 작성해주세요.'
+                        text=f'다음 YouTube 비디오 트랜스크립트를 분석하여 포괄적인 요약을 작성해주세요:\n\n{text}\n\nMarkdown 형식으로 구조화해서 작성해주세요.'
                     ),
                 ],
             ),
@@ -640,7 +693,7 @@ def summarize_text(text, api_key):
         
         generate_content_config = types.GenerateContentConfig(
             response_mime_type="text/plain",
-            system_instruction='당신은 전문적인 콘텐츠 요약 전문가입니다. 명확하고 구조화된 요약을 제공하며, 독자가 쉽게 이해할 수 있도록 작성합니다.',
+            system_instruction='당신은 전문적인 콘텐츠 요약 전문가입니다.',
             temperature=0.1
         )
         
@@ -663,161 +716,165 @@ def main():
     )
     
     st.title("📺 SnapTube: YouTube Transcript Summarizer")
-    st.write("**YouTube Data API v3 버전** - IP 차단 문제 해결!")
+    st.write("**OAuth2 인증 버전** - YouTube 자막 다운로드 지원!")
     
-    # API Key 확인
-    if YOUTUBE_API_KEY == "YOUR_YOUTUBE_DATA_API_KEY_HERE":
-        st.error("⚠️ 개발자: YouTube Data API 키를 설정해주세요!")
-        st.code("YOUTUBE_API_KEY = 'your_actual_api_key_here'")
+    # OAuth2 Setup Warning
+    if (CLIENT_SECRETS["web"]["client_id"] == "YOUR_CLIENT_ID.apps.googleusercontent.com" or
+        CLIENT_SECRETS["web"]["client_secret"] == "YOUR_CLIENT_SECRET"):
+        st.error("⚠️ 개발자: OAuth2 클라이언트 정보를 설정해주세요!")
+        
+        with st.expander("🔧 OAuth2 설정 방법", expanded=True):
+            st.markdown("""
+            ### 1단계: Google Cloud Console 설정
+            1. [Google Cloud Console](https://console.cloud.google.com/) 접속
+            2. 프로젝트 생성 또는 선택
+            3. **YouTube Data API v3** 활성화
+            4. **OAuth 2.0 클라이언트 ID** 생성:
+               - 사용자 인증 정보 → OAuth 2.0 클라이언트 ID
+               - 애플리케이션 유형: **웹 애플리케이션**
+               - 승인된 리디렉션 URI: `http://localhost:8501`
+            
+            ### 2단계: 코드에 정보 입력
+            ```python
+            CLIENT_SECRETS = {
+                "web": {
+                    "client_id": "your-client-id.apps.googleusercontent.com",
+                    "client_secret": "your-client-secret",
+                    # 나머지는 그대로
+                }
+            }
+            ```
+            
+            ### 왜 OAuth2가 필요한가요?
+            - YouTube Data API에서 자막 **다운로드**는 OAuth2 인증 필요
+            - API 키로는 자막 **목록만** 조회 가능
+            - 보안상 사용자 인증이 필요한 기능
+            """)
         return
     
-    # Gemini API Key input
-    st.subheader("🔑 Gemini API 키 입력")
-    api_key = st.text_input(
-        "Gemini API Key를 입력하세요", 
-        type="password",
-        help="Google AI Studio에서 발급받으세요: https://makersuite.google.com/app/apikey"
-    )
+    # Check if user is authenticated
+    if 'credentials' not in st.session_state:
+        st.session_state.credentials = None
     
-    # Video URL/ID input
-    st.subheader("🎥 YouTube 비디오")
-    video_input = st.text_input(
-        "YouTube 비디오 URL 또는 비디오 ID를 입력하세요",
-        placeholder="https://www.youtube.com/watch?v=VIDEO_ID"
-    )
+    # Authentication section
+    st.subheader("🔐 YouTube 인증")
     
-    # Options
-    col1, col2 = st.columns(2)
-    with col1:
-        show_transcript = st.checkbox("원본 자막 표시", value=True)
-    with col2:
-        st.write("")  # spacing
-    
-    # Generate Summary button
-    if st.button("🚀 요약 생성", type="primary", use_container_width=True):
-        if not api_key:
-            st.error("❌ Gemini API Key를 입력해주세요!")
-            return
-            
-        if not video_input:
-            st.error("❌ YouTube 비디오 URL 또는 비디오 ID를 입력해주세요!")
-            return
+    if st.session_state.credentials is None:
+        st.info("YouTube 자막에 접근하려면 Google 계정으로 로그인해야 합니다.")
         
-        try:
-            # Extract video ID
-            video_id = extract_video_id(video_input)
-            st.info(f"🎯 처리 중인 비디오 ID: `{video_id}`")
+        col1, col2 = st.columns([1, 2])
+        
+        with col1:
+            if st.button("🔑 Google 로그인", type="primary"):
+                try:
+                    auth_url, flow = get_oauth2_url()
+                    st.session_state.flow = flow
+                    st.markdown(f"👆 [여기를 클릭해서 Google 로그인하세요]({auth_url})")
+                    st.info("로그인 후 나타나는 인증 코드를 아래에 입력하세요.")
+                except Exception as e:
+                    st.error(f"인증 URL 생성 실패: {str(e)}")
+        
+        with col2:
+            auth_code = st.text_input(
+                "인증 코드 입력",
+                help="Google 로그인 후 받은 코드를 여기에 붙여넣으세요"
+            )
             
-            # Get transcript
-            with st.spinner("📄 자막 가져오는 중..."):
-                transcript, error = get_transcript(video_id)
-            
-            if error:
-                st.error(f"❌ 자막 가져오기 실패: {error}")
-                
-                # Show troubleshooting guide
-                with st.expander("🔧 문제 해결 가이드"):
-                    st.markdown("""
-                    ### 가능한 원인:
-                    1. **자막이 없는 비디오**: 일부 비디오는 자막이 제공되지 않습니다
-                    2. **비공개/제한된 비디오**: 접근할 수 없는 비디오입니다
-                    3. **API 할당량 초과**: YouTube Data API 일일 한도를 초과했습니다
-                    4. **잘못된 비디오 ID**: URL이나 ID를 다시 확인해주세요
-                    
-                    ### 해결 방법:
-                    1. ✅ **다른 비디오로 테스트** (자막이 있는 공개 비디오)
-                    2. 📺 **TED Talks나 교육 비디오** 시도 (자막이 잘 제공됨)
-                    3. ⏰ **잠시 후 다시 시도** (API 할당량 리셋 대기)
-                    4. 🔑 **YouTube Data API 키 확인** (올바른 키이고 활성화되었는지)
-                    
-                    ### API 키 발급 방법:
-                    1. [Google Cloud Console](https://console.cloud.google.com/) 접속
-                    2. 프로젝트 생성 또는 선택
-                    3. YouTube Data API v3 활성화
-                    4. 자격 증명 → API 키 생성
-                    """)
+            if auth_code and st.button("인증 완료"):
+                try:
+                    credentials = exchange_code_for_token(auth_code)
+                    st.session_state.credentials = credentials
+                    st.success("✅ 인증 성공!")
+                    st.rerun()
+                except Exception as e:
+                    st.error(f"인증 실패: {str(e)}")
+    
+    else:
+        st.success("✅ YouTube 인증 완료!")
+        if st.button("🚪 로그아웃"):
+            st.session_state.credentials = None
+            st.rerun()
+    
+    # Only show main app if authenticated
+    if st.session_state.credentials:
+        # Gemini API Key input
+        st.subheader("🤖 Gemini API 키")
+        api_key = st.text_input(
+            "Gemini API Key를 입력하세요", 
+            type="password",
+            help="Google AI Studio에서 발급: https://makersuite.google.com/app/apikey"
+        )
+        
+        # Video input
+        st.subheader("🎥 YouTube 비디오")
+        video_input = st.text_input(
+            "YouTube 비디오 URL 또는 비디오 ID를 입력하세요",
+            placeholder="https://www.youtube.com/watch?v=VIDEO_ID"
+        )
+        
+        show_transcript = st.checkbox("원본 자막 표시", value=True)
+        
+        # Generate Summary button
+        if st.button("🚀 요약 생성", type="primary", use_container_width=True):
+            if not api_key:
+                st.error("❌ Gemini API Key를 입력해주세요!")
                 return
                 
-            if transcript:
-                st.success(f"✅ 자막을 성공적으로 가져왔습니다! ({len(transcript):,}자)")
+            if not video_input:
+                st.error("❌ YouTube 비디오 URL을 입력해주세요!")
+                return
+            
+            try:
+                video_id = extract_video_id(video_input)
+                st.info(f"🎯 처리 중인 비디오 ID: `{video_id}`")
                 
-                # Show original transcript if enabled
-                if show_transcript:
-                    st.subheader("📜 원본 자막")
-                    st.text_area("전체 자막", transcript, height=200)
-                
-                # Generate summary
-                with st.spinner("🤖 AI 요약 생성 중..."):
-                    summary, error = summarize_text(transcript, api_key)
+                # Get transcript with OAuth2
+                with st.spinner("📄 자막 가져오는 중..."):
+                    transcript, error = get_transcript_with_oauth(video_id, st.session_state.credentials)
                 
                 if error:
-                    st.error(f"❌ 요약 생성 실패: {error}")
+                    st.error(f"❌ 자막 가져오기 실패: {error}")
                     return
                     
-                if summary:
-                    st.subheader("📋 비디오 요약")
-                    st.markdown(summary)
+                if transcript:
+                    st.success(f"✅ 자막을 성공적으로 가져왔습니다! ({len(transcript):,}자)")
                     
-                    # Download options
-                    col3, col4 = st.columns(2)
-                    with col3:
-                        st.download_button(
-                            label="📥 요약 다운로드 (Markdown)",
-                            data=summary,
-                            file_name=f"youtube_summary_{video_id}.md",
-                            mime="text/markdown"
-                        )
+                    if show_transcript:
+                        st.subheader("📜 원본 자막")
+                        st.text_area("전체 자막", transcript, height=200)
                     
-                    with col4:
-                        st.download_button(
-                            label="📥 원본 자막 다운로드",
-                            data=transcript,
-                            file_name=f"youtube_transcript_{video_id}.txt",
-                            mime="text/plain"
-                        )
-                else:
-                    st.error("요약을 생성할 수 없습니다.")
+                    # Generate summary
+                    with st.spinner("🤖 AI 요약 생성 중..."):
+                        summary, error = summarize_text(transcript, api_key)
+                    
+                    if error:
+                        st.error(f"❌ 요약 생성 실패: {error}")
+                        return
+                        
+                    if summary:
+                        st.subheader("📋 비디오 요약")
+                        st.markdown(summary)
+                        
+                        # Download options
+                        col1, col2 = st.columns(2)
+                        with col1:
+                            st.download_button(
+                                label="📥 요약 다운로드",
+                                data=summary,
+                                file_name=f"summary_{video_id}.md",
+                                mime="text/markdown"
+                            )
+                        
+                        with col2:
+                            st.download_button(
+                                label="📥 자막 다운로드",
+                                data=transcript,
+                                file_name=f"transcript_{video_id}.txt",
+                                mime="text/plain"
+                            )
                 
-        except Exception as e:
-            st.error(f"❌ 예상치 못한 오류가 발생했습니다: {str(e)}")
-            st.info("문제가 지속되면 다른 비디오로 시도해보세요.")
-
-    # Instructions
-    with st.expander("📋 사용 방법 및 API 키 발급 가이드"):
-        st.markdown("""
-        ### 🔑 Gemini API 키 발급
-        1. [Google AI Studio](https://makersuite.google.com/app/apikey)에서 무료로 발급
-        2. Google 계정으로 로그인
-        3. "Create API Key" 클릭
-        4. 생성된 키를 복사해서 위에 입력
-        
-        ### 🎯 사용법
-        1. Gemini API 키 입력
-        2. YouTube 비디오 URL 입력 (전체 URL 또는 비디오 ID만)
-        3. 요약 생성 버튼 클릭
-        4. 결과 확인 및 다운로드
-        
-        ### 📺 추천 테스트 비디오
-        - TED Talks (자막이 항상 제공됨)
-        - 교육 채널 영상들 (Khan Academy, Crash Course 등)
-        - 인기 있는 공개 비디오들
-        
-        ### ⚠️ 주의사항
-        - YouTube Data API 일일 할당량: 10,000 쿼터
-        - 일부 비디오는 자막이 없을 수 있습니다
-        - 비공개 또는 제한된 비디오는 접근 불가
-        """)
-
-    # Footer
-    st.markdown("---")
-    st.markdown("""
-    **💡 이 버전의 장점:**
-    - ✅ IP 차단 문제 완전 해결
-    - ✅ 공식 YouTube Data API v3 사용
-    - ✅ 안정적이고 신뢰할 수 있음
-    - ✅ 자막 품질 선택 (수동 > 자동생성)
-    - ✅ 다양한 언어 지원
-    """)
+            except Exception as e:
+                st.error(f"❌ 오류: {str(e)}")
 
 if __name__ == "__main__":
     main()
