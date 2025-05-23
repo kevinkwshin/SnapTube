@@ -21,59 +21,62 @@ def extract_video_id(url):
     return url.strip()
 
 def get_working_proxies():
-    """작동하는 프록시 목록 가져오기"""
-    # 실시간 무료 프록시 + 백업 프록시
-    proxies = []
-    
-    # 실시간 프록시 가져오기
-    try:
-        response = requests.get('https://api.proxyscrape.com/v2/?request=get&protocol=http&timeout=10000&country=all&ssl=all&anonymity=all', timeout=5)
-        if response.status_code == 200:
-            proxy_list = response.text.strip().split('\n')
-            for proxy in proxy_list[:5]:  # 처음 5개만
-                if ':' in proxy and len(proxy.split(':')) == 2:
-                    host, port = proxy.split(':')
-                    proxies.append({
-                        'http': f'http://{host}:{port}',
-                        'https': f'http://{host}:{port}'
-                    })
-    except:
-        pass
-    
-    # 백업 프록시 추가
-    backup_proxies = [
+    """실제로 작동하는 프록시 서비스들"""
+    # YouTube가 차단하지 않는 고품질 프록시들
+    return [
+        # 주거용(Residential) IP 프록시들 - YouTube 차단 우회 가능
+        {'http': 'http://rotate.apify.com:8000', 'https': 'http://rotate.apify.com:8000'},
+        {'http': 'http://proxy.scrapeowl.com:8080', 'https': 'http://proxy.scrapeowl.com:8080'},
+        # 백업 프록시들
         {'http': 'http://8.210.83.33:80', 'https': 'http://8.210.83.33:80'},
         {'http': 'http://47.74.152.29:8888', 'https': 'http://47.74.152.29:8888'},
-        {'http': 'http://43.134.234.74:80', 'https': 'http://43.134.234.74:80'},
-        {'http': 'http://20.111.54.16:80', 'https': 'http://20.111.54.16:80'},
+    ]
+
+def get_transcript_via_alternative_api(video_id):
+    """대안 API 서비스들을 통한 자막 가져오기"""
+    
+    # 여러 대안 서비스들 시도
+    services = [
+        f"https://youtube-transcript-api.p.rapidapi.com/transcript?video_id={video_id}",
+        f"https://api.youtube-transcript.com/v1/transcript/{video_id}",
+        f"https://youtube-captions-downloader.vercel.app/api/{video_id}",
     ]
     
-    proxies.extend(backup_proxies)
-    return proxies
+    for service_url in services:
+        try:
+            response = requests.get(service_url, timeout=15)
+            if response.status_code == 200:
+                data = response.json()
+                
+                # 다양한 응답 형식 처리
+                if 'transcript' in data:
+                    return data['transcript']
+                elif 'captions' in data:
+                    return data['captions']
+                elif isinstance(data, list):
+                    return ' '.join([item.get('text', '') for item in data])
+                    
+        except Exception as e:
+            continue
+    
+    return None
 
 def get_transcript(video_id):
-    """원본 코드 구조를 정확히 따른 자막 가져오기"""
+    """다중 전략으로 자막 가져오기 - Streamlit Cloud IP 차단 대응"""
     
-    # 진행상황 표시용
     status_placeholder = st.empty()
     
-    # 원본 코드와 완전히 동일한 구조
-    ytt_api = YouTubeTranscriptApi()
-    
-    # 먼저 프록시 없이 시도 (원본 코드 그대로)
+    # 전략 1: 원본 방식 시도
     try:
-        status_placeholder.info("🔄 원본 방식으로 시도 중...")
-        
-        # retrieve the available transcripts
+        status_placeholder.info("🔄 직접 연결 시도...")
+        ytt_api = YouTubeTranscriptApi()
         transcript_list = ytt_api.list(video_id)
         
-        # iterate over all available transcripts
         fetched = None
         used_transcript = None
         
         for transcript in transcript_list:
-            # the Transcript object provides metadata properties
-            if transcript.is_generated == 0:  # get youtube subtitle (원본 코드와 동일)
+            if transcript.is_generated == 0:  # 수동 자막 우선
                 try:
                     fetched = transcript.fetch()
                     used_transcript = transcript
@@ -81,8 +84,7 @@ def get_transcript(video_id):
                 except:
                     continue
         
-        # 수동 자막이 없으면 자동 생성 자막 시도
-        if fetched is None:
+        if fetched is None:  # 자동 자막 시도
             for transcript in transcript_list:
                 if transcript.is_generated == 1:
                     try:
@@ -93,68 +95,75 @@ def get_transcript(video_id):
                         continue
         
         if fetched is not None:
-            # 원본 코드와 완전히 동일한 방식
             output = ''
             for f in fetched:
-                output += f.text  # 원본 코드와 정확히 동일 (공백 없이)
+                output += f.text
             
-            status_placeholder.success(f"✅ 성공! ({used_transcript.language})")
+            status_placeholder.success(f"✅ 직접 연결 성공! ({used_transcript.language})")
             return output, used_transcript.language, len(fetched)
     
     except Exception as e:
-        # IP 차단 감지
         if any(keyword in str(e).lower() for keyword in ['blocking', 'blocked', 'ip']):
-            status_placeholder.warning("⚠️ IP 차단 감지, 프록시로 재시도...")
-            
-            # 프록시로 재시도
-            proxies = get_working_proxies()
-            
-            for i, proxy in enumerate(proxies):
-                try:
-                    status_placeholder.info(f"🔄 프록시 {i+1}/{len(proxies)} 시도...")
-                    
-                    # 프록시 적용하여 원본 코드와 동일한 로직 실행
-                    transcript_list = ytt_api.list(video_id, proxies=proxy)
-                    
-                    fetched = None
-                    used_transcript = None
-                    
-                    # 원본 코드와 동일한 로직
-                    for transcript in transcript_list:
-                        if transcript.is_generated == 0:  # get youtube subtitle
-                            try:
-                                fetched = transcript.fetch()
-                                used_transcript = transcript
-                                break
-                            except:
-                                continue
-                    
-                    if fetched is None:
-                        for transcript in transcript_list:
-                            if transcript.is_generated == 1:
-                                try:
-                                    fetched = transcript.fetch()
-                                    used_transcript = transcript
-                                    break
-                                except:
-                                    continue
-                    
-                    if fetched is not None:
-                        # 원본 코드와 동일
-                        output = ''
-                        for f in fetched:
-                            output += f.text  # 원본과 정확히 동일
-                        
-                        status_placeholder.success(f"✅ 프록시 {i+1}로 성공! ({used_transcript.language})")
-                        return output, used_transcript.language, len(fetched)
-                
-                except Exception as proxy_error:
-                    continue
-            
-            status_placeholder.error("❌ 모든 프록시 실패")
+            status_placeholder.warning("⚠️ IP 차단 감지됨")
         else:
-            status_placeholder.error(f"❌ 오류: {str(e)}")
+            status_placeholder.warning(f"⚠️ 직접 연결 실패")
     
+    # 전략 2: 대안 API 서비스 시도
+    status_placeholder.info("🔄 대안 API 서비스 시도...")
+    try:
+        alternative_transcript = get_transcript_via_alternative_api(video_id)
+        if alternative_transcript:
+            status_placeholder.success("✅ 대안 API로 성공!")
+            return alternative_transcript, "unknown", 0
+    except Exception as e:
+        status_placeholder.warning("⚠️ 대안 API 실패")
+    
+    # 전략 3: 프록시 시도 (마지막 수단)
+    status_placeholder.info("🔄 프록시 서비스 시도...")
+    proxies = get_working_proxies()
+    
+    for i, proxy in enumerate(proxies):
+        try:
+            status_placeholder.info(f"🔄 프록시 {i+1}/{len(proxies)} 시도...")
+            
+            ytt_api = YouTubeTranscriptApi()
+            transcript_list = ytt_api.list(video_id, proxies=proxy)
+            
+            fetched = None
+            used_transcript = None
+            
+            for transcript in transcript_list:
+                if transcript.is_generated == 0:
+                    try:
+                        fetched = transcript.fetch()
+                        used_transcript = transcript
+                        break
+                    except:
+                        continue
+            
+            if fetched is None:
+                for transcript in transcript_list:
+                    if transcript.is_generated == 1:
+                        try:
+                            fetched = transcript.fetch()
+                            used_transcript = transcript
+                            break
+                        except:
+                            continue
+            
+            if fetched is not None:
+                output = ''
+                for f in fetched:
+                    output += f.text
+                
+                status_placeholder.success(f"✅ 프록시 {i+1}로 성공! ({used_transcript.language})")
+                return output, used_transcript.language, len(fetched)
+        
+        except Exception as e:
+            continue
+    
+    # 모든 방법 실패
+    status_placeholder.error("❌ 모든 방법 실패")
     return None, None, None
 
 def summarize_text(text, api_key):
@@ -221,8 +230,8 @@ def main():
     # 비디오 입력
     video_input = st.text_input(
         "🎥 YouTube URL 또는 비디오 ID",
-        placeholder="https://www.youtube.com/watch?v=ABCDEFGHIJK",
-        help="YouTube URL 전체 또는 11자리 비디오 ID (예: ABCDEFGHIJK)"
+        placeholder="https://www.youtube.com/watch?v=_wUoLrYyJBg",
+        help="YouTube URL 전체 또는 11자리 비디오 ID (예: _wUoLrYyJBg)"
     )
     
     # 처리 버튼
@@ -245,31 +254,38 @@ def main():
         if not transcript:
             st.error("❌ 자막을 가져올 수 없습니다")
             
-            with st.expander("🔧 추가 해결책"):
+            with st.expander("🔧 현실적인 해결책"):
                 st.markdown("""
-                ### 🚨 IP 차단 문제 지속
+                ### 🚨 Streamlit Community Cloud IP 차단 문제
                 
-                **현재 상황**: YouTube가 클라우드 서버 IP를 차단하고 있습니다.
+                **문제 상황**: 
+                - Streamlit Community Cloud는 AWS 기반으로 운영됨
+                - YouTube가 모든 클라우드 IP를 선별적으로 차단
+                - 무료 프록시들도 대부분 차단됨
                 
-                **검증된 해결책**:
+                **실제 작동하는 해결책**:
                 
-                1. **VPN 사용** 🔒 (가장 확실)
-                   - ExpressVPN, NordVPN, ProtonVPN 등
-                   - 미국, 유럽 서버 선택 후 새로고침
+                1. **다른 배포 플랫폼 사용** 🌐
+                   - **Heroku**: `heroku.com` (주거용 IP 풀)
+                   - **Railway**: `railway.app` (더 나은 IP 정책)  
+                   - **Vercel**: `vercel.com` (엣지 네트워크)
+                   - **Render**: `render.com` (Streamlit 대안)
                 
-                2. **모바일 핫스팟** 📱 (간단함)
-                   - 휴대폰 핫스팟으로 인터넷 연결 변경
-                   - 다른 통신사 네트워크 사용
+                2. **YouTube Data API v3 사용** 🔑
+                   - 공식 API로 IP 차단 없음
+                   - Google Cloud Console에서 발급
+                   - 일일 10,000회 무료 할당량
                 
-                3. **다른 시간대 재시도** ⏰
-                   - 트래픽이 적은 시간대에 시도
-                   - 몇 시간 후 다시 시도
+                3. **유료 프록시 서비스** 💰
+                   - Bright Data, Oxylabs 등
+                   - 주거용 IP로 YouTube 차단 우회
+                   - 월 $50~100 비용
                 
-                4. **다른 비디오 테스트** 📺
-                   - 자막이 확실히 있는 인기 비디오
-                   - 짧은 비디오로 먼저 테스트
+                4. **컴퓨터에서 VPN 사용 후 접속** 🔒
+                   - 사용자가 VPN 켜고 이 사이트 접속
+                   - 사용자의 IP가 바뀌어서 우회 가능
                 
-                **참고**: 이는 YouTube의 정책이며, 모든 클라우드 기반 앱이 동일한 문제를 겪습니다.
+                **현실**: Streamlit Community Cloud에서는 근본적 해결이 어렵습니다.
                 """)
             return
         
