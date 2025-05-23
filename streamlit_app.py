@@ -512,6 +512,7 @@ from urllib.parse import urlparse, parse_qs
 
 # YouTube Data API Key (여기에 본인의 API 키를 입력하세요)
 YOUTUBE_API_KEY = "YOUR_YOUTUBE_DATA_API_KEY_HERE"
+YOUTUBE_API_KEY = "AIzaSyA_EiI2xe7fqL1xG44QQKAhzHq7Zx42HJY"
 
 def extract_video_id(url):
     """Extract video ID from various YouTube URL formats"""
