@@ -2,6 +2,9 @@ import streamlit as st
 from youtube_transcript_api import YouTubeTranscriptApi
 import google.generativeai as genai
 import re
+import requests
+import time
+import random
 
 def extract_video_id(url):
     """YouTube URL에서 비디오 ID 추출"""
@@ -17,64 +20,138 @@ def extract_video_id(url):
             return match.group(1)
     return url.strip()
 
-def get_transcript(video_id):
-    """자막 가져오기 - 수동 자막 우선, 없으면 자동 생성 자막"""
+def get_free_proxies():
+    """무료 프록시 목록 가져오기"""
     try:
+        # 실시간 무료 프록시 API
+        response = requests.get('https://api.proxyscrape.com/v2/?request=get&protocol=http&timeout=10000&country=US&ssl=all&anonymity=all', timeout=10)
+        proxies = response.text.strip().split('\n')
+        
+        proxy_list = []
+        for proxy in proxies[:3]:  # 처음 3개만 사용
+            if ':' in proxy:
+                host, port = proxy.split(':')
+                proxy_dict = {
+                    'http': f'http://{host}:{port}',
+                    'https': f'http://{host}:{port}'
+                }
+                proxy_list.append(proxy_dict)
+        
+        return proxy_list
+    except:
+        # 백업 프록시 목록
+        return [
+            {'http': 'http://8.210.83.33:80', 'https': 'http://8.210.83.33:80'},
+            {'http': 'http://47.74.152.29:8888', 'https': 'http://47.74.152.29:8888'},
+        ]
+
+def get_transcript_with_bypass(video_id, use_bypass=False):
+    """IP 우회 기능이 포함된 자막 가져오기"""
+    methods = []
+    errors = []
+    
+    # Method 1: 직접 요청
+    methods.append(("직접 요청", lambda: YouTubeTranscriptApi.get_transcript(video_id)))
+    
+    # Method 2: 프록시 사용 (우회 활성화시)
+    if use_bypass:
+        try:
+            proxies = get_free_proxies()
+            for i, proxy in enumerate(proxies):
+                methods.append((f"프록시 {i+1}", lambda p=proxy: YouTubeTranscriptApi.get_transcript(video_id, proxies=p)))
+        except:
+            pass
+    
+    # Method 3: 다른 언어 시도
+    methods.append(("다른 언어 시도", lambda: try_different_languages(video_id)))
+    
+    # 각 방법을 순차적으로 시도
+    for method_name, method_func in methods:
+        try:
+            transcript = method_func()
+            if transcript:
+                # 성공한 방법 표시
+                if "프록시" in method_name:
+                    st.success(f"✅ {method_name}으로 IP 우회 성공!")
+                elif method_name == "직접 요청":
+                    st.success(f"✅ {method_name} 성공!")
+                else:
+                    st.success(f"✅ {method_name} 성공!")
+                
+                return transcript, None
+        except Exception as e:
+            error_msg = f"{method_name}: {str(e)[:100]}..."
+            errors.append(error_msg)
+            
+            # IP 차단 감지
+            if "blocking" in str(e).lower() or "blocked" in str(e).lower():
+                if not use_bypass:
+                    return None, f"IP 차단 감지됨. '🚀 IP 우회 활성화'를 체크하고 다시 시도하세요.\n\n상세 오류: {str(e)}"
+            
+            time.sleep(random.uniform(1, 2))  # 짧은 지연
+    
+    # 모든 방법 실패
+    detailed_error = "모든 방법이 실패했습니다.\n\n시도한 방법들:\n" + "\n".join(errors)
+    return None, detailed_error
+
+def try_different_languages(video_id):
+    """다른 언어 자막 시도"""
+    transcript_list = YouTubeTranscriptApi.list_transcripts(video_id)
+    
+    # 수동 자막 우선
+    for transcript in transcript_list:
+        if not transcript.is_generated:
+            try:
+                return transcript.fetch()
+            except:
+                continue
+    
+    # 자동 생성 자막
+    for transcript in transcript_list:
+        if transcript.is_generated:
+            try:
+                return transcript.fetch()
+            except:
+                continue
+    
+    raise Exception("사용 가능한 자막이 없습니다")
+
+def get_transcript(video_id, use_bypass=False):
+    """자막 가져오기 - IP 우회 기능 포함"""
+    try:
+        # IP 우회 기능 사용
+        transcript_data, error = get_transcript_with_bypass(video_id, use_bypass)
+        
+        if error:
+            return None, error, None
+        
+        if not transcript_data:
+            return None, "자막을 가져올 수 없습니다", None
+        
+        # 자막 정보 수집
         ytt_api = YouTubeTranscriptApi()
+        transcript_list = ytt_api.list_transcripts(video_id)
         
-        # 사용 가능한 자막 목록 가져오기 (로그 최소화)
-        transcript_list = ytt_api.list(video_id)
-        
-        fetched = None
-        successful_transcript = None
-        errors = []
         transcript_info = []
-        
-        # 사용 가능한 자막 정보 수집
         for transcript in transcript_list:
             transcript_type = "수동 작성" if transcript.is_generated == 0 else "자동 생성"
             transcript_info.append(f"{transcript.language} ({transcript.language_code}) - {transcript_type}")
         
-        # 1단계: 수동 작성된 자막 찾기 (is_generated == 0)
-        for transcript in transcript_list:
-            if transcript.is_generated == 0:  # 수동 자막
-                try:
-                    fetched = transcript.fetch()
-                    successful_transcript = transcript
-                    break
-                except Exception as e:
-                    errors.append(f"수동 자막 {transcript.language} 실패: {str(e)}")
-                    continue
+        # 사용된 자막 정보 (첫 번째 자막으로 가정)
+        first_transcript = list(transcript_list)[0]
         
-        # 2단계: 수동 자막이 없으면 자동 생성 자막 사용 (is_generated == 1)
-        if fetched is None:
-            for transcript in transcript_list:
-                if transcript.is_generated == 1:  # 자동 생성 자막
-                    try:
-                        fetched = transcript.fetch()
-                        successful_transcript = transcript
-                        break
-                    except Exception as e:
-                        errors.append(f"자동 자막 {transcript.language} 실패: {str(e)}")
-                        continue
-        
-        # 자막이 없는 경우
-        if fetched is None:
-            detailed_error = f"모든 자막 가져오기 실패.\n\n사용 가능한 자막:\n" + "\n".join(transcript_info) + "\n\n세부 오류:\n" + "\n".join(errors)
-            return None, detailed_error, None
-        
-        # 자막 텍스트 합치기 (작은따옴표 제거)
+        # 자막 텍스트 합치기 (따옴표 제거)
         output = ''
-        for f in fetched:
-            text = f.text.replace("'", "").replace('"', '')  # 작은따옴표, 큰따옴표 제거
+        for f in transcript_data:
+            text = f.text.replace("'", "").replace('"', '')
             output += text + ' '
         
         # 성공 정보 반환
         success_info = {
-            'language': successful_transcript.language,
-            'language_code': successful_transcript.language_code,
-            'type': '수동 작성' if successful_transcript.is_generated == 0 else '자동 생성',
-            'segments': len(fetched),
+            'language': first_transcript.language,
+            'language_code': first_transcript.language_code,
+            'type': '수동 작성' if first_transcript.is_generated == 0 else '자동 생성',
+            'segments': len(transcript_data),
             'total_chars': len(output.strip()),
             'available_transcripts': transcript_info
         }
@@ -82,7 +159,7 @@ def get_transcript(video_id):
         return output.strip(), None, success_info
         
     except Exception as e:
-        detailed_error = f"자막 목록 가져오기 실패: {str(e)}\n\n가능한 원인:\n1. 잘못된 비디오 ID\n2. 비공개/삭제된 비디오\n3. IP 차단\n4. 네트워크 오류"
+        detailed_error = f"자막 목록 가져오기 실패: {str(e)}\n\n가능한 원인:\n1. IP 차단 (IP 우회 활성화 권장)\n2. 잘못된 비디오 ID\n3. 비공개/삭제된 비디오\n4. 네트워크 오류"
         return None, detailed_error, None
 
 def summarize_text(text, api_key):
@@ -121,21 +198,55 @@ def main():
     st.write("YouTube 비디오의 자막을 추출하고 AI로 요약합니다.")
     
     # 사용법 안내
-    with st.expander("💡 사용법 및 주의사항"):
+    with st.expander("💡 사용법 및 IP 차단 해결"):
         st.markdown("""
-        ### 사용법
+        ### 📋 사용법
         1. Gemini API 키 입력
-        2. YouTube 비디오 URL 입력
-        3. 요약 생성 버튼 클릭
+        2. YouTube 비디오 URL 입력  
+        3. **IP 차단시 '🚀 IP 우회 활성화' 체크**
+        4. 요약 생성 버튼 클릭
         
-        ### 자막 우선순위
+        ### 🚨 IP 차단 문제
+        **현상**: 클라우드 환경에서 YouTube가 IP를 차단
+        
+        **해결책**:
+        1. **🚀 IP 우회 활성화** (앱 내장 기능)
+        2. **VPN 사용** (컴퓨터에 설치)
+        3. **로컬에서 실행** (100% 안정적)
+        4. **모바일 핫스팟 사용**
+        
+        ### 🔧 로컬 실행 방법
+        ```bash
+        pip install streamlit youtube-transcript-api google-generativeai
+        streamlit run app.py
+        ```
+        
+        ### 🎯 자막 우선순위
         1. **수동 작성 자막** (사람이 직접 작성) - 가장 정확
         2. **자동 생성 자막** (YouTube AI 생성) - 차선책
-        
-        ### IP 차단 문제
-        - 클라우드 환경에서는 IP 차단될 수 있음
-        - **해결법**: VPN 사용 또는 로컬에서 실행
         """)
+    
+    # IP 우회 옵션
+    st.subheader("🚀 IP 우회 설정")
+    col1, col2 = st.columns([2, 1])
+    
+    with col1:
+        use_bypass = st.checkbox(
+            "🚀 IP 우회 활성화", 
+            value=False,
+            help="YouTube IP 차단시 활성화하세요. 무료 프록시를 사용하여 IP를 우회합니다."
+        )
+    
+    with col2:
+        if use_bypass:
+            st.success("🔄 우회 모드")
+        else:
+            st.info("📍 직접 모드")
+    
+    if use_bypass:
+        st.info("💡 IP 우회가 활성화되었습니다. 무료 프록시를 통해 YouTube에 접근합니다.")
+    
+    st.markdown("---")
     
     # API 키 입력
     api_key = st.text_input(
@@ -172,9 +283,9 @@ def main():
         video_id = extract_video_id(video_input)
         st.info(f"🎯 비디오 ID: {video_id}")
         
-        # 자막 가져오기
-        with st.spinner("📄 자막 가져오는 중..."):
-            transcript, error, info = get_transcript(video_id)
+        # 자막 가져오기 (IP 우회 포함)
+        with st.spinner("📄 자막 가져오는 중..." + (" (IP 우회 시도)" if use_bypass else "")):
+            transcript, error, info = get_transcript(video_id, use_bypass)
         
         if error:
             st.error(f"❌ 자막 가져오기 실패")
@@ -183,19 +294,34 @@ def main():
             with st.expander("🔍 세부 오류 정보"):
                 st.text(error)
             
-            # 해결책 제시
+            # 해결책 제시 (IP 우회 포함)
             with st.expander("🔧 해결 방법"):
                 st.markdown("""
-                ### 주요 원인
-                1. **IP 차단**: 클라우드 환경에서 YouTube 접근 제한
-                2. **자막 없음**: 해당 비디오에 자막이 없음
-                3. **비공개 비디오**: 접근 권한 없음
+                ### 🔥 즉시 해결책
                 
-                ### 해결책
-                1. **VPN 사용** - 가장 효과적
-                2. **로컬에서 실행** - 100% 안정적
-                3. **다른 비디오 시도** - 자막이 있는 공개 비디오
-                4. **모바일 핫스팟 사용**
+                **1순위: IP 우회 활성화** 🚀
+                - 위의 '🚀 IP 우회 활성화' 체크박스를 켜고 다시 시도
+                - 앱 내장 무료 프록시 사용
+                
+                **2순위: VPN 사용** 🔒
+                - 컴퓨터에 VPN 앱 설치 (ExpressVPN, NordVPN, ProtonVPN)
+                - 미국, 유럽 서버 선택 후 페이지 새로고침
+                
+                **3순위: 로컬에서 실행** 🏠 (100% 안정적)
+                ```bash
+                pip install streamlit youtube-transcript-api google-generativeai
+                streamlit run app.py
+                ```
+                
+                **4순위: 기타 방법** 📱
+                - 모바일 핫스팟 사용
+                - 다른 네트워크에서 접속
+                - 시간을 두고 재시도
+                
+                ### 💡 원인 분석
+                - 클라우드 환경 IP 차단 (AWS, GCP 등)
+                - YouTube의 봇 방지 정책
+                - 동일 IP에서 과도한 요청
                 """)
             return
         
