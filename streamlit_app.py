@@ -20,6 +20,10 @@ def extract_video_id(url):
 def get_transcript_alternative_apis(video_id):
     """대안 API들을 사용해서 자막 가져오기"""
     
+    # 진행 표시용
+    progress_placeholder = st.empty()
+    log_messages = []
+    
     # 여러 무료 자막 API 서비스들 시도
     services = [
         {
@@ -46,7 +50,7 @@ def get_transcript_alternative_apis(video_id):
     
     for i, service in enumerate(services):
         try:
-            st.info(f"🔄 {service['name']} 시도 중... ({i+1}/{len(services)})")
+            progress_placeholder.info(f"🔄 {service['name']} 시도 중... ({i+1}/{len(services)})")
             
             response = requests.get(
                 service['url'], 
@@ -79,19 +83,35 @@ def get_transcript_alternative_apis(video_id):
                         transcript_text = data['text']
                 
                 if transcript_text and len(transcript_text.strip()) > 100:
-                    st.success(f"✅ {service['name']} 성공!")
+                    progress_placeholder.success(f"✅ {service['name']} 성공!")
                     return transcript_text.strip()
+                else:
+                    log_messages.append(f"❌ {service['name']}: 자막 내용이 너무 짧음")
+                    
+            else:
+                log_messages.append(f"❌ {service['name']}: HTTP {response.status_code}")
                     
         except Exception as e:
-            st.warning(f"❌ {service['name']} 실패: {str(e)[:50]}...")
+            log_messages.append(f"❌ {service['name']}: {str(e)[:50]}...")
             continue
+    
+    # 모든 시도 실패시 로그 표시
+    progress_placeholder.empty()
+    
+    if log_messages:
+        with st.expander("🔍 상세 로그 보기"):
+            for msg in log_messages:
+                st.write(msg)
     
     return None
 
 def get_transcript_youtube_direct(video_id):
     """YouTube에서 직접 자막 정보 가져오기 (스크래핑)"""
+    
+    progress_placeholder = st.empty()
+    
     try:
-        st.info("🔄 YouTube 직접 접근 시도...")
+        progress_placeholder.info("🔄 YouTube 직접 접근 시도...")
         
         # YouTube 페이지 헤더 설정 (봇 차단 우회)
         headers = {
@@ -107,7 +127,7 @@ def get_transcript_youtube_direct(video_id):
         if response.status_code == 200:
             # 자막 정보가 있는지 확인
             if 'captionTracks' in response.text:
-                st.success("✅ 자막 정보 발견!")
+                progress_placeholder.success("✅ 자막 정보 발견!")
                 
                 # 간단한 자막 URL 추출 (정규식 사용)
                 caption_pattern = r'"captionTracks":\[{"baseUrl":"([^"]+)"'
@@ -130,14 +150,18 @@ def get_transcript_youtube_direct(video_id):
                                     transcript_parts.append(text_elem.text.strip())
                             
                             if transcript_parts:
+                                progress_placeholder.success("✅ YouTube 직접 접근 성공!")
                                 return ' '.join(transcript_parts)
                         except:
                             pass
-                            
+            
+            progress_placeholder.empty()
             return None
             
     except Exception as e:
-        st.warning(f"YouTube 직접 접근 실패: {str(e)}")
+        progress_placeholder.empty()
+        with st.expander("🔍 상세 로그 보기"):
+            st.write(f"❌ YouTube 직접 접근 실패: {str(e)}")
         return None
 
 def get_transcript(video_id):
@@ -156,12 +180,18 @@ def get_transcript(video_id):
     return None, None, None
 
 def summarize_text(text, api_key):
-    """Gemini 2.5 Flash로 요약 생성"""
+    """Gemini로 요약 생성 - 안정적인 모델 사용"""
     try:
         genai.configure(api_key=api_key)
-        model = genai.GenerativeModel('gemini-2.5-flash')
         
-        prompt = f"""
+        # 안정적인 모델들을 순서대로 시도
+        models = ['gemini-1.5-flash', 'gemini-1.5-pro', 'gemini-pro']
+        
+        for model_name in models:
+            try:
+                model = genai.GenerativeModel(model_name)
+                
+                prompt = f"""
 다음 YouTube 비디오의 자막을 요약해주세요:
 
 {text}
@@ -173,9 +203,17 @@ def summarize_text(text, api_key):
 
 한국어로 명확하고 간결하게 작성해주세요.
 """
+                
+                response = model.generate_content(prompt)
+                return response.text
+                
+            except Exception as e:
+                if "not found" in str(e).lower():
+                    continue  # 다음 모델 시도
+                else:
+                    raise e
         
-        response = model.generate_content(prompt)
-        return response.text
+        return "사용 가능한 Gemini 모델을 찾을 수 없습니다. API 키를 확인해주세요."
         
     except Exception as e:
         return f"요약 생성 실패: {str(e)}"
@@ -187,27 +225,7 @@ def main():
     )
     
     st.title("📺 YouTube 자막 요약기")
-    st.write("**간편 버전** - OAuth 없이 자막 추출!")
-    
-    # 안내 메시지
-    with st.expander("💡 이 버전의 특징"):
-        st.markdown("""
-        ### ✅ 장점
-        - **OAuth 인증 불필요**: 복잡한 Google 로그인 없음
-        - **여러 API 시도**: 다양한 무료 서비스 활용
-        - **간단한 사용법**: API 키만 입력하면 바로 사용
-        - **빠른 처리**: 직접적인 접근 방식
-        
-        ### ⚠️ 제한사항
-        - **성공률 변동**: 외부 서비스에 의존적
-        - **일부 제한**: 특정 비디오는 접근 불가능
-        - **속도 차이**: 여러 API를 순차 시도
-        
-        ### 🔧 작동 방식
-        1. 여러 무료 자막 API 시도
-        2. YouTube 직접 접근 시도
-        3. 가장 먼저 성공한 방법 사용
-        """)
+    st.write("YouTube 비디오의 자막을 추출하고 AI로 요약합니다.")
     
     # Gemini API 키 입력
     col1, col2 = st.columns([3, 1])
@@ -289,7 +307,7 @@ def main():
         tab1, tab2 = st.tabs(["🤖 **AI 요약**", "📜 **원본 자막**"])
         
         with tab1:
-            with st.spinner("🤖 Gemini 2.5 Flash로 요약 생성 중..."):
+            with st.spinner("🤖 AI 요약 생성 중..."):
                 summary = summarize_text(transcript, gemini_api_key)
             
             st.markdown("### 🤖 AI 요약")
