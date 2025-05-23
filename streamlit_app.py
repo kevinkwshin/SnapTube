@@ -505,16 +505,11 @@
 
 import streamlit as st
 from youtube_transcript_api import YouTubeTranscriptApi
-from youtube_transcript_api.proxies import WebshareProxyConfig
-from google import genai
-from google.genai import types
-import requests
+import google.generativeai as genai
 import re
-import time
-import random
 
 def extract_video_id(url):
-    """Extract video ID from various YouTube URL formats"""
+    """YouTube URL에서 비디오 ID 추출"""
     patterns = [
         r'(?:v=|\/)([0-9A-Za-z_-]{11}).*',
         r'(?:youtu\.be\/)([0-9A-Za-z_-]{11})',
@@ -527,180 +522,77 @@ def extract_video_id(url):
             return match.group(1)
     return url.strip()
 
-def get_free_proxy_list():
-    """무료 프록시 목록 가져오기 (실시간)"""
+def get_transcript(video_id):
+    """자막 가져오기 - 수동 자막 우선, 없으면 자동 생성 자막"""
     try:
-        # 무료 프록시 API 사용
-        response = requests.get('https://api.proxyscrape.com/v2/?request=get&protocol=http&timeout=10000&country=US&ssl=all&anonymity=all')
-        proxies = response.text.strip().split('\n')
+        ytt_api = YouTubeTranscriptApi()
         
-        proxy_list = []
-        for proxy in proxies[:5]:  # 처음 5개만 사용
-            if ':' in proxy:
-                host, port = proxy.split(':')
-                proxy_dict = {
-                    'http': f'http://{host}:{port}',
-                    'https': f'http://{host}:{port}'
-                }
-                proxy_list.append(proxy_dict)
+        # 사용 가능한 자막 목록 가져오기
+        transcript_list = ytt_api.list(video_id)
         
-        return proxy_list
-    except:
-        # 백업 프록시 목록 (하드코딩)
-        return [
-            {'http': 'http://8.210.83.33:80', 'https': 'http://8.210.83.33:80'},
-            {'http': 'http://47.74.152.29:8888', 'https': 'http://47.74.152.29:8888'},
-            {'http': 'http://43.134.234.74:80', 'https': 'http://43.134.234.74:80'},
-        ]
-
-def get_transcript_with_multiple_methods(video_id, use_proxy=False, proxy_service=None):
-    """여러 방법으로 자막 가져오기"""
-    
-    methods = []
-    
-    # Method 1: 직접 요청
-    methods.append(("직접 요청", lambda: YouTubeTranscriptApi.get_transcript(video_id)))
-    
-    # Method 2: 무료 프록시 사용
-    if use_proxy and proxy_service == "free":
-        proxy_list = get_free_proxy_list()
-        for i, proxy in enumerate(proxy_list):
-            methods.append((f"무료 프록시 {i+1}", lambda p=proxy: YouTubeTranscriptApi.get_transcript(video_id, proxies=p)))
-    
-    # Method 3: Webshare 프록시 (유료)
-    elif use_proxy and proxy_service == "webshare":
-        webshare_username = st.secrets.get("webshare_username", "")
-        webshare_password = st.secrets.get("webshare_password", "")
+        fetched = None
         
-        if webshare_username and webshare_password:
-            ytt_api = YouTubeTranscriptApi(
-                proxy_config=WebshareProxyConfig(
-                    proxy_username=webshare_username,
-                    proxy_password=webshare_password
-                )
-            )
-            methods.append(("Webshare 프록시", lambda: ytt_api.get_transcript(video_id)))
-    
-    # Method 4: User-Agent 변경 + 지연
-    methods.append(("User-Agent 변경", lambda: get_transcript_with_headers(video_id)))
-    
-    # Method 5: 다른 언어 시도
-    methods.append(("다른 언어 시도", lambda: try_different_languages(video_id)))
-    
-    # 각 방법을 순차적으로 시도
-    for method_name, method_func in methods:
-        try:
-            st.info(f"🔄 {method_name} 시도 중...")
-            transcript = method_func()
-            
-            if transcript:
-                st.success(f"✅ {method_name} 성공!")
-                return ' '.join([item['text'] for item in transcript]), None
-                
-        except Exception as e:
-            st.warning(f"❌ {method_name} 실패: {str(e)[:100]}...")
-            time.sleep(random.uniform(1, 3))  # 지연
-    
-    return None, "모든 방법이 실패했습니다."
-
-def get_transcript_with_headers(video_id):
-    """User-Agent 변경하여 자막 가져오기"""
-    import urllib.request
-    import json
-    
-    # 다양한 User-Agent 시도
-    user_agents = [
-        'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
-        'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
-        'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
-    ]
-    
-    for user_agent in user_agents:
-        try:
-            # 사용자 정의 요청 헤더로 시도
-            original_get_transcript = YouTubeTranscriptApi.get_transcript
-            
-            # 헤더 설정 (이는 실제로는 youtube-transcript-api 내부에서 처리되므로 제한적)
-            transcript = YouTubeTranscriptApi.get_transcript(video_id)
-            return transcript
-            
-        except Exception as e:
-            continue
-    
-    raise Exception("모든 User-Agent 시도 실패")
-
-def try_different_languages(video_id):
-    """다른 언어 자막 시도"""
-    transcript_list = YouTubeTranscriptApi.list_transcripts(video_id)
-    
-    # 우선순위: 수동 > 자동
-    for transcript in transcript_list:
-        if not transcript.is_generated:
-            try:
-                return transcript.fetch()
-            except:
-                continue
-    
-    for transcript in transcript_list:
-        if transcript.is_generated:
-            try:
-                return transcript.fetch()
-            except:
-                continue
-    
-    raise Exception("사용 가능한 자막이 없습니다")
-
-def get_transcript_via_api_alternative(video_id):
-    """대안 API 사용하여 자막 가져오기"""
-    try:
-        # 무료 YouTube 자막 API 사용 (제3자 서비스)
-        api_urls = [
-            f"https://youtube-transcript-api.p.rapidapi.com/transcript?video_id={video_id}",
-            f"https://youtube-captions-api.herokuapp.com/api/captions/{video_id}",
-        ]
+        # 1단계: 수동 작성된 자막 찾기 (is_generated == 0)
+        for transcript in transcript_list:
+            if transcript.is_generated == 0:  # 수동 자막
+                try:
+                    fetched = transcript.fetch()
+                    st.success(f"✅ 수동 자막 발견: {transcript.language} ({transcript.language_code})")
+                    break
+                except:
+                    continue
         
-        for api_url in api_urls:
-            try:
-                response = requests.get(api_url, timeout=10)
-                if response.status_code == 200:
-                    data = response.json()
-                    if 'transcript' in data:
-                        return data['transcript'], None
-            except:
-                continue
+        # 2단계: 수동 자막이 없으면 자동 생성 자막 사용 (is_generated == 1)
+        if fetched is None:
+            for transcript in transcript_list:
+                if transcript.is_generated == 1:  # 자동 생성 자막
+                    try:
+                        fetched = transcript.fetch()
+                        st.info(f"ℹ️ 자동 생성 자막 사용: {transcript.language} ({transcript.language_code})")
+                        break
+                    except:
+                        continue
         
-        return None, "대안 API 모두 실패"
+        # 자막이 없는 경우
+        if fetched is None:
+            return None, "이 비디오에는 사용 가능한 자막이 없습니다."
+        
+        # 자막 텍스트 합치기
+        output = ''
+        for f in fetched:
+            output += f.text + ' '
+        
+        return output.strip(), None
         
     except Exception as e:
-        return None, f"대안 API 오류: {str(e)}"
+        return None, str(e)
 
 def summarize_text(text, api_key):
-    """텍스트 요약"""
+    """Gemini를 사용한 텍스트 요약"""
     try:
-        client = genai.Client(api_key=api_key)
-        model = "gemini-2.0-flash-exp"
+        genai.configure(api_key=api_key)
+        model = genai.GenerativeModel('gemini-2.0-flash-exp')
         
-        max_length = 15000
+        # 텍스트 길이 제한
+        max_length = 20000
         if len(text) > max_length:
             text = text[:max_length] + "..."
+            st.warning(f"⚠️ 텍스트가 너무 길어서 {max_length}자로 제한했습니다.")
         
-        contents = [
-            types.Content(
-                role="user",
-                parts=[
-                    types.Part.from_text(
-                        text=f'다음 YouTube 비디오 트랜스크립트를 요약해주세요:\n\n{text}'
-                    ),
-                ],
-            ),
-        ]
+        prompt = f"""
+다음 YouTube 비디오의 자막을 요약해주세요:
+
+{text}
+
+다음 형식으로 요약해주세요:
+## 📌 주요 주제
+## 🔑 핵심 내용 (3-5개 포인트)
+## 💡 결론 및 시사점
+
+한국어로 명확하고 간결하게 작성해주세요.
+"""
         
-        response = client.models.generate_content(
-            model=model,
-            contents=contents,
-            config=types.GenerateContentConfig(temperature=0.1)
-        )
-        
+        response = model.generate_content(prompt)
         return response.text, None
         
     except Exception as e:
@@ -708,172 +600,142 @@ def summarize_text(text, api_key):
 
 def main():
     st.set_page_config(
-        page_title="SnapTube: IP 우회 통합 버전",
-        page_icon="🔥",
-        layout="wide"
+        page_title="YouTube 자막 요약기",
+        page_icon="📺"
     )
     
-    st.title("🔥 SnapTube: IP 우회 통합 버전")
-    st.write("**컴퓨터 VPN 없이도 IP 우회 가능!**")
+    st.title("📺 YouTube 자막 요약기")
+    st.write("YouTube 비디오의 자막을 추출하고 AI로 요약합니다.")
     
-    # IP 우회 방법 설명
-    with st.expander("🚀 IP 우회 방법들", expanded=True):
+    # 사용법 안내
+    with st.expander("💡 사용법 및 주의사항"):
         st.markdown("""
-        ### 🔧 앱 내장 IP 우회 기능
-        1. **무료 프록시 자동 사용** - 실시간 프록시 목록 가져오기
-        2. **Webshare 프록시** - 유료 프록시 서비스 (가장 안정적)
-        3. **User-Agent 변경** - 브라우저 정보 변경
-        4. **다중 언어 시도** - 여러 언어 자막 시도
-        5. **대안 API 사용** - 제3자 서비스 활용
+        ### 사용법
+        1. Gemini API 키 입력
+        2. YouTube 비디오 URL 입력
+        3. 요약 생성 버튼 클릭
         
-        ### 💡 장점
-        - ✅ 컴퓨터에 VPN 설치 불필요
-        - ✅ 앱에서 자동으로 IP 우회
-        - ✅ 여러 방법을 순차적으로 시도
-        - ✅ 실시간 상태 표시
+        ### 자막 우선순위
+        1. **수동 작성 자막** (사람이 직접 작성) - 가장 정확
+        2. **자동 생성 자막** (YouTube AI 생성) - 차선책
         
-        ### ⚠️ 제한사항
-        - 무료 프록시는 불안정할 수 있음
-        - 속도가 느릴 수 있음
-        - 100% 보장되지 않음
-        """)
-    
-    # 프록시 설정
-    st.subheader("🌐 프록시 설정")
-    
-    col1, col2 = st.columns(2)
-    
-    with col1:
-        use_proxy = st.checkbox("🔄 IP 우회 활성화", value=True)
-    
-    with col2:
-        proxy_service = st.selectbox(
-            "프록시 서비스 선택",
-            ["free", "webshare"],
-            format_func=lambda x: "무료 프록시" if x == "free" else "Webshare (유료)"
-        )
-    
-    if proxy_service == "webshare":
-        st.info("💡 Webshare 사용 시 Streamlit Secrets에 계정 정보를 설정하세요:")
-        st.code("""
-# .streamlit/secrets.toml
-webshare_username = "your_username"
-webshare_password = "your_password"
+        ### IP 차단 문제
+        - 클라우드 환경에서는 IP 차단될 수 있음
+        - **해결법**: VPN 사용 또는 로컬에서 실행
         """)
     
     # API 키 입력
-    st.subheader("🤖 Gemini API 키")
     api_key = st.text_input(
-        "API 키 입력",
+        "🔑 Gemini API Key",
         type="password",
-        help="Google AI Studio에서 발급"
+        help="Google AI Studio에서 발급받으세요"
     )
     
-    # 비디오 입력
-    st.subheader("🎥 YouTube 비디오")
+    # 비디오 URL 입력
     video_input = st.text_input(
-        "비디오 URL 또는 ID 입력",
+        "🎥 YouTube URL 또는 비디오 ID",
         placeholder="https://www.youtube.com/watch?v=VIDEO_ID"
     )
     
     # 옵션
-    show_transcript = st.checkbox("원본 자막 표시", value=True)
+    show_transcript = st.checkbox("📜 원본 자막 표시", value=True)
     
-    # 실행 버튼
-    if st.button("🚀 요약 생성 (IP 우회 포함)", type="primary"):
+    # 처리 버튼
+    if st.button("🚀 자막 추출 및 요약", type="primary"):
         if not api_key:
-            st.error("❌ API 키를 입력해주세요!")
+            st.error("❌ Gemini API Key를 입력해주세요!")
             return
         
         if not video_input:
-            st.error("❌ 비디오 URL을 입력해주세요!")
+            st.error("❌ YouTube URL을 입력해주세요!")
             return
         
+        # 비디오 ID 추출
         video_id = extract_video_id(video_input)
         st.info(f"🎯 비디오 ID: {video_id}")
         
-        # 자막 가져오기 (IP 우회 포함)
-        with st.spinner("📄 자막 가져오는 중... (IP 우회 시도)"):
-            transcript, error = get_transcript_with_multiple_methods(
-                video_id, use_proxy, proxy_service
-            )
+        # 자막 가져오기
+        with st.spinner("📄 자막 가져오는 중..."):
+            transcript, error = get_transcript(video_id)
         
         if error:
-            st.error(f"❌ 모든 방법 실패: {error}")
+            st.error(f"❌ 자막 가져오기 실패: {error}")
             
-            # 추가 해결책
-            with st.expander("🆘 추가 해결책"):
+            # 해결책 제시
+            with st.expander("🔧 해결 방법"):
                 st.markdown("""
-                ### 🔧 다른 방법들
-                1. **컴퓨터 VPN 사용** (가장 확실)
-                   - ExpressVPN, NordVPN, ProtonVPN
-                2. **로컬에서 실행**
-                   ```bash
-                   streamlit run app.py
-                   ```
-                3. **모바일 핫스팟 사용**
-                4. **다른 비디오로 테스트**
-                5. **시간을 두고 재시도**
+                ### 주요 원인
+                1. **IP 차단**: 클라우드 환경에서 YouTube 접근 제한
+                2. **자막 없음**: 해당 비디오에 자막이 없음
+                3. **비공개 비디오**: 접근 권한 없음
+                
+                ### 해결책
+                1. **VPN 사용** - 가장 효과적
+                2. **로컬에서 실행** - 100% 안정적
+                ```bash
+                pip install streamlit youtube-transcript-api google-generativeai
+                streamlit run app.py
+                ```
+                3. **다른 비디오 시도** - 자막이 있는 공개 비디오
+                4. **모바일 핫스팟 사용**
                 """)
             return
         
         if transcript:
-            st.success(f"✅ 자막 가져오기 성공! ({len(transcript):,}자)")
+            st.success(f"✅ 자막 추출 성공! (총 {len(transcript):,}자)")
             
+            # 원본 자막 표시
             if show_transcript:
                 st.subheader("📜 원본 자막")
-                st.text_area("자막", transcript, height=200)
+                st.text_area("추출된 자막", transcript, height=200)
             
             # 요약 생성
-            with st.spinner("🤖 요약 생성 중..."):
-                summary, error = summarize_text(transcript, api_key)
+            with st.spinner("🤖 AI 요약 생성 중..."):
+                summary, summary_error = summarize_text(transcript, api_key)
+            
+            if summary_error:
+                st.error(f"❌ 요약 생성 실패: {summary_error}")
+                return
             
             if summary:
-                st.subheader("📋 요약")
+                st.subheader("📋 AI 요약")
                 st.markdown(summary)
                 
-                # 다운로드
+                # 다운로드 버튼
                 col1, col2 = st.columns(2)
                 with col1:
                     st.download_button(
                         "📥 요약 다운로드",
                         summary,
-                        f"summary_{video_id}.md"
+                        f"youtube_summary_{video_id}.md",
+                        mime="text/markdown"
                     )
+                
                 with col2:
                     st.download_button(
                         "📥 자막 다운로드",
                         transcript,
-                        f"transcript_{video_id}.txt"
+                        f"youtube_transcript_{video_id}.txt",
+                        mime="text/plain"
                     )
-    
-    # 실시간 프록시 상태 체크
-    with st.expander("🔍 프록시 상태 확인"):
-        if st.button("프록시 테스트"):
-            with st.spinner("프록시 상태 확인 중..."):
-                proxies = get_free_proxy_list()
-                
-                if proxies:
-                    st.success(f"✅ {len(proxies)}개의 프록시를 찾았습니다!")
-                    for i, proxy in enumerate(proxies):
-                        st.write(f"프록시 {i+1}: {proxy['http']}")
-                else:
-                    st.warning("❌ 사용 가능한 프록시를 찾지 못했습니다.")
 
-    # 푸터
+    # 테스트 비디오
     st.markdown("---")
-    st.markdown("""
-    **🎯 이 앱의 특징:**
-    - 🔄 자동 IP 우회 (컴퓨터 VPN 불필요)
-    - 🚀 다중 방법 시도
-    - 📊 실시간 상태 표시
-    - 🔧 프록시 자동 관리
+    st.subheader("🧪 테스트용 비디오")
     
-    **💡 성공률 높이는 팁:**
-    - 여러 번 시도해보세요
-    - 다른 비디오로 테스트해보세요
-    - 시간대를 바꿔서 시도해보세요
-    """)
+    test_videos = [
+        ("TED Talk", "UF8uR6Z6KLc", "How to speak so that people want to listen"),
+        ("교육 영상", "kjBOesZCoqc", "Khan Academy - Intro to Economics"),
+        ("인기 영상", "dNVtMmLlnoE", "Crash Course World History")
+    ]
+    
+    cols = st.columns(3)
+    for i, (category, vid_id, title) in enumerate(test_videos):
+        with cols[i]:
+            st.write(f"**{category}**")
+            st.write(title)
+            if st.button(f"테스트", key=f"test_{i}"):
+                st.info(f"비디오 ID `{vid_id}`를 위에 입력하고 실행해보세요!")
 
 if __name__ == "__main__":
     main()
