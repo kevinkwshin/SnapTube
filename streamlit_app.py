@@ -230,13 +230,13 @@ def summarize_text(text, api_key):
 
 def main():
     st.set_page_config(
-        page_title="YouTube 자막 요약기",
+        page_title="SnapTube: 자막 추출 및 요약",
         page_icon="📺",
         layout="wide"
     )
     
-    st.title("📺 YouTube 자막 요약기")
-    st.markdown("YouTube 비디오의 자막을 추출하고 Gemini AI로 요약합니다.")
+    st.title("📺 SnapTube")
+    st.markdown("YouTube 비디오의 자막을 추출하고 AI로 요약합니다.")
     
     col1, col2 = st.columns(2)
     
