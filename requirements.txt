@@ -1,4 +1,4 @@
 streamlit
 requests
-google-generativeai
+google-generativeai==1.16.1
 youtube-transcript-api==0.6.0
