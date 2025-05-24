@@ -1,130 +1,192 @@
-import streamlit as st
-from youtube_transcript_api import YouTubeTranscriptApi, TranscriptsDisabled, NoTranscriptFound
-from google import genai
-from google.genai import types
+"""
+YouTube Transcript Summarizer – Streamlit Cloud App
+--------------------------------------------------
+This app lets a user
+1. Paste **any YouTube URL**.
+2. Supply their **Google AI Studio (Generative AI) API key**.
+3. Click **Summarize** to automatically
+   * extract the *video_id* from the URL,
+   * fetch the open‑captions transcript, and
+   * generate a concise Markdown summary using a Gemini model.
+
+Deploy this single file on **Streamlit Cloud** together with a
+`requirements.txt` containing:
+    streamlit
+    youtube-transcript-api
+    google-generativeai
+
+Author: Adapted from *Youtube_Contents_Summary.ipynb* (2025‑05‑24)
+"""
+
+from __future__ import annotations
+
+import os
 import re
-from urllib.parse import urlparse, parse_qs
+import textwrap
+import urllib.parse as urlparse
+from typing import List
 
-# 유튜브 비디오 ID 추출 함수 (최적화)
-def extract_video_id(url):
-    if not url:
-        return None
-    url = url.strip()
-    if "youtube.com/watch" in url:
-        try:
-            parsed_url = urlparse(url)
-            return parse_qs(parsed_url.query)['v'][0]
-        except (KeyError, IndexError):
-            return None
-    elif "youtu.be/" in url:
-        try:
-            return url.split("youtu.be/")[1].split("?")[0]
-        except IndexError:
-            return None
-    elif "youtube.com/embed/" in url:
-        try:
-            return url.split("embed/")[1].split("?")[0]
-        except IndexError:
-            return None
-    elif re.fullmatch(r"^[a-zA-Z0-9_-]{11}$", url):
-        return url
-    else:
-        return None
+import streamlit as st
+from youtube_transcript_api import YouTubeTranscriptApi, TranscriptsDisabled
 
-# 자막 추출 (is_generated==0 수동만)
-def get_manual_transcript(video_id):
-    try:
-        ytt_api = YouTubeTranscriptApi()
-        transcript_list = ytt_api.list(video_id)
-    except TranscriptsDisabled:
-        return None, "이 비디오는 자막이 비활성화되어 있습니다."
-    except NoTranscriptFound:
-        return None, "이 비디오에는 자막이 없습니다."
-    except Exception as e:
-        return None, f"자막 추출 실패: {str(e)}"
+try:
+    # unified import introduced in google‑generativeai>=0.3
+    import google.generativeai as genai
+except ImportError as e:  # pragma: no cover – user must add to requirements
+    raise SystemExit("Missing dependency: pip install google‑generativeai") from e
 
-    for transcript in transcript_list:
-        if transcript.is_generated == 0:
-            try:
-                fetched = transcript.fetch()
-                output = ''.join([f['text'] for f in fetched if 'text' in f])
-                return output, f"{transcript.language} ({transcript.language_code}) - 수동 생성"
-            except Exception as e:
-                return None, f"자막 fetch 실패: {str(e)}"
-    return None, "수동 생성 자막(is_generated==0)이 없습니다."
+###########################################################################
+# ------------------------------- UI ------------------------------------ #
+###########################################################################
 
-# Gemini 2.5 Flash 요약 (Streaming)
-def summarize_stream(text, api_key):
-    client = genai.Client(api_key=api_key)
-    model = "gemini-2.5-flash-preview-05-20"
-    contents = [
-        types.Content(
-            role="user",
-            parts=[
-                types.Part.from_text(
-                    text=f"Summarize and Write the good readability Report with numberings of text below in their language as Markdown.\n{text}"
-                ),
-            ],
-        ),
-    ]
-    generate_content_config = types.GenerateContentConfig(
-        response_mime_type="text/plain",
-        system_instruction='You are a Professional writer.',
-        temperature=0.1
+st.set_page_config(
+    page_title="YouTube Transcript Summarizer",
+    page_icon="🎬",
+    layout="centered",
+)
+
+# --- Sidebar (API key input & instructions) -----------------------------
+with st.sidebar:
+    st.title("🔑 Google AI Studio API Key")
+    api_key = st.text_input(
+        "Enter your API key", type="password", placeholder="AIza…"
     )
+    st.markdown(
+        """Get one at **[Google AI Studio → API keys](https://aistudio.google.com/app/apikey)**.""",
+        help="The key never leaves your browser – it is only sent to Google’s API.",
+    )
+    st.divider()
+    st.caption("Made with Streamlit • YouTube Transcript API • Gemini ✨")
 
-    summary = ""
-    try:
-        for chunk in client.models.generate_content_stream(
-            model=model,
-            contents=contents,
-            config=generate_content_config,
-        ):
-            if hasattr(chunk, 'text') and chunk.text:
-                summary += chunk.text
-                yield chunk.text
-    except Exception as e:
-        yield f"\n요약 생성 실패: {str(e)}"
+# --- Main content --------------------------------------------------------
 
-def main():
-    st.set_page_config(page_title="YouTube 자막 AI 요약기 (Gemini 2.5)", page_icon="📺")
-    st.title("📺 SnapTube : 수동 자막 AI 요약기 (Gemini 2.5 Flash)")
-    st.caption("AI Studio API Key와 YouTube 주소/ID를 입력하면 수동 생성 자막만 추출하여 Gemini 2.5로 Markdown 요약을 보여줍니다.")
+st.title("🎞️ YouTube Transcript Summarizer")
 
-    api_key = st.text_input("🔑 Gemini AI Studio API Key", type="password")
-    url = st.text_input("🎥 YouTube URL 또는 Video ID", placeholder="예: https://www.youtube.com/watch?v=dQw4w9WgXcQ")
+video_url: str | None = st.text_input(
+    "Paste a YouTube video URL",
+    placeholder="https://www.youtube.com/watch?v=dQw4w9WgXcQ",
+)
 
-    if st.button("🚀 자막 추출 및 요약", disabled=not (api_key and url)):
-        video_id = extract_video_id(url)
-        if not video_id:
-            st.error("유효한 YouTube URL 또는 Video ID가 아닙니다.")
+start_button = st.button("📑 Summarize", type="primary")
+
+###########################################################################
+# ----------------------------- Utilities -------------------------------- #
+###########################################################################
+
+def extract_video_id(url: str) -> str | None:
+    """Return the YouTube *video_id* from a full / short / embed URL."""
+    parsed = urlparse.urlparse(url.strip())
+
+    # youtube.com or www.youtube.com
+    if parsed.hostname and "youtube.com" in parsed.hostname:
+        query = urlparse.parse_qs(parsed.query)
+        if "v" in query:
+            return query["v"][0]
+        # /embed/{id} or /shorts/{id}
+        match = re.match(r"/(embed|shorts)/([\w-]{11})", parsed.path)
+        if match:
+            return match.group(2)
+    # youtu.be/{id}
+    if parsed.hostname and parsed.hostname.endswith("youtu.be"):
+        return parsed.path.lstrip("/")
+    return None
+
+@st.cache_data(show_spinner=False)
+def fetch_transcript(video_id: str) -> str:
+    """Download transcript text for *video_id* and return as a single string."""
+    transcript: List[dict] = YouTubeTranscriptApi.get_transcript(
+        video_id,
+        languages=["ko", "en", "en-US", "en-GB"],
+    )
+    return " ".join(chunk["text"] for chunk in transcript)
+
+@st.cache_resource(show_spinner=False)
+def load_model(api_key: str):
+    """Singleton Gemini model instance – cached per unique API key."""
+    os.environ["GOOGLE_API_KEY"] = api_key  # used by backend HTTP client
+    genai.configure(api_key=api_key)
+    return genai.GenerativeModel("gemini-1.5-pro-latest")
+
+def summarize(text: str, api_key: str) -> str:
+    """Summarise *text* using Gemini and return Markdown output."""
+    model = load_model(api_key)
+
+    # Gemini can handle ~1 M tokens, but we keep prompts below 30k chars
+    CHUNK = 15000
+    if len(text) <= CHUNK:
+        prompt = _build_prompt(text)
+        return model.generate_content(prompt).text
+
+    # Long transcripts → chunk summarisation, then hierarchical summarisation
+    partial_summaries: List[str] = []
+    for i in range(0, len(text), CHUNK):
+        part = text[i : i + CHUNK]
+        prompt = _build_prompt(part)
+        partial = model.generate_content(prompt).text
+        partial_summaries.append(partial)
+
+    # Second‑pass summary
+    second_prompt = _build_prompt("\n\n".join(partial_summaries))
+    return model.generate_content(second_prompt).text
+
+def _build_prompt(transcript_chunk: str) -> str:
+    """Return a language‑agnostic prompt for Gemini."""
+    return textwrap.dedent(
+        f"""
+        You are a world‑class note‑taker.
+        Summarise the following YouTube transcript as **concise bullet points** in the transcript’s original language.
+        Capture all key ideas, numbers, and speaker arguments. Use Markdown.
+        Transcript:
+        {transcript_chunk}
+        """
+    ).strip()
+
+###########################################################################
+# --------------------------- Action logic ------------------------------- #
+###########################################################################
+
+if start_button:
+    if not api_key:
+        st.error("Please provide your Google AI Studio API key in the sidebar.")
+        st.stop()
+
+    if not video_url:
+        st.error("Please paste a YouTube URL to continue.")
+        st.stop()
+
+    with st.spinner("Extracting video ID …"):
+        vid = extract_video_id(video_url)
+    if not vid:
+        st.error("❌ Unable to extract a valid video ID from the URL.")
+        st.stop()
+
+    st.success(f"Video ID: `{vid}`")
+
+    # ------------------ Transcript retrieval --------------------------- #
+    with st.spinner("Fetching transcript from YouTube …"):
+        try:
+            transcript_text = fetch_transcript(vid)
+        except TranscriptsDisabled:
+            st.error("Transcripts are disabled for this video.")
+            st.stop()
+        except Exception as exc:
+            st.error(f"Unable to retrieve transcript: {exc}")
             st.stop()
 
-        with st.spinner("유튜브 수동 자막 추출 중..."):
-            transcript_text, method = get_manual_transcript(video_id)
+    st.success(f"Retrieved {len(transcript_text):,} characters of transcript.")
 
-        if not transcript_text:
-            st.error(f"자막 추출 실패: {method}")
-            st.info("가능한 원인:\n"
-                    "- 수동 생성 자막 없음 (is_generated==0)\n"
-                    "- 비공개/연령제한/멤버십 영상\n"
-                    "- 네트워크/버전 문제")
-            return
+    with st.expander("Raw transcript"):
+        st.write(transcript_text)
 
-        st.success(f"✅ 자막 추출 성공! ({method})")
-        with st.expander("📜 원본 자막 펼치기", expanded=True):
-            st.text_area("자막 내용", transcript_text, height=300)
-            st.download_button("📥 자막 다운로드 (.txt)", transcript_text, f"transcript_{video_id}.txt", mime="text/plain")
+    # ------------------ Summarisation --------------------------------- #
+    with st.spinner("Generating summary with Gemini …"):
+        try:
+            summary_md = summarize(transcript_text, api_key)
+        except Exception as exc:
+            st.error(f"Gemini error: {exc}")
+            st.stop()
 
-        st.markdown("### 🤖 Gemini 2.5 요약 (Markdown, Streaming)")
-        summary_placeholder = st.empty()
-        markdown_output = ""
-        with st.spinner("Gemini 2.5로 요약 생성 중 (Streaming)..."):
-            for chunk in summarize_stream(transcript_text, api_key):
-                markdown_output += chunk
-                summary_placeholder.markdown(markdown_output, unsafe_allow_html=True)
-        st.success("✅ 요약 생성 완료!")
-        st.download_button("📥 요약 다운로드 (.md)", markdown_output, f"summary_{video_id}.md", mime="text/markdown")
+    st.markdown("### 🔍 Summary")
+    st.markdown(summary_md)
 
-if __name__ == "__main__":
-    main()
+    st.toast("Done! ✨", icon="🎉")
