@@ -29,7 +29,7 @@ from typing import List
 import streamlit as st
 from youtube_transcript_api import YouTubeTranscriptApi, TranscriptsDisabled
 
-import google.generativeai as genai
+from google import genai
 
 ###########################################################################
 # ------------------------------- UI ------------------------------------ #
