@@ -67,32 +67,73 @@ def setup_session_with_proxy():
     
     return session
 
+def patch_youtube_transcript_api():
+    """youtube-transcript-api의 내부 요청들을 모두 패치"""
+    import youtube_transcript_api._api as yt_api
+    
+    # 원본 함수들 백업
+    original_session = getattr(yt_api, '_session', None)
+    
+    # 새로운 세션 생성
+    session = setup_session_with_proxy()
+    
+    # youtube-transcript-api 내부 세션 교체
+    if hasattr(yt_api, '_session'):
+        yt_api._session = session
+    
+    # requests 모듈 자체도 패치
+    original_get = requests.get
+    original_post = requests.post
+    
+    def patched_get(*args, **kwargs):
+        kwargs.setdefault('headers', {}).update(session.headers)
+        kwargs.setdefault('cookies', session.cookies)
+        kwargs.setdefault('timeout', 15)
+        return original_get(*args, **kwargs)
+    
+    def patched_post(*args, **kwargs):
+        kwargs.setdefault('headers', {}).update(session.headers)
+        kwargs.setdefault('cookies', session.cookies)
+        kwargs.setdefault('timeout', 15)
+        return original_post(*args, **kwargs)
+    
+    requests.get = patched_get
+    requests.post = patched_post
+    
+    return original_get, original_post, original_session
+
+def restore_requests(original_get, original_post, original_session):
+    """원본 requests 함수들 복원"""
+    requests.get = original_get
+    requests.post = original_post
+    
+    # youtube-transcript-api 세션도 복원
+    if original_session is not None:
+        import youtube_transcript_api._api as yt_api
+        if hasattr(yt_api, '_session'):
+            yt_api._session = original_session
+
 def get_transcript(video_id):
-    """YouTube Transcript API로 자막 가져오기 - IP 차단 우회"""
+    """YouTube Transcript API로 자막 가져오기 - 강화된 IP 차단 우회"""
     max_attempts = 5
     
     for attempt in range(max_attempts):
+        # 패치 정보 저장
+        patch_info = None
+        
         try:
             if attempt > 0:
                 delay = random.uniform(3, 8) * attempt  # 점진적으로 대기 시간 증가
                 st.info(f"🔄 재시도 {attempt + 1}/{max_attempts} (대기: {delay:.1f}초)")
                 time.sleep(delay)
             
-            # 각 시도마다 새로운 세션과 헤더 설정
-            session = setup_session_with_proxy()
-            
-            # youtube-transcript-api가 사용하는 requests 세션을 패치
-            original_get = requests.get
-            def patched_get(*args, **kwargs):
-                kwargs['headers'] = session.headers
-                kwargs['cookies'] = session.cookies
-                kwargs['timeout'] = kwargs.get('timeout', 15)
-                return original_get(*args, **kwargs)
-            
-            requests.get = patched_get
+            # 각 시도마다 완전히 새로운 패치 적용
+            st.info(f"🛡️ IP 우회 설정 중... (시도 {attempt + 1})")
+            patch_info = patch_youtube_transcript_api()
             
             try:
                 # 사용 가능한 자막 목록 가져오기
+                st.info("📋 자막 목록 조회 중...")
                 transcript_list = YouTubeTranscriptApi.list_transcripts(video_id)
                 
                 # 수동 생성 자막 우선 찾기
@@ -118,10 +159,11 @@ def get_transcript(video_id):
                 
                 if selected_transcript:
                     try:
-                        # 자막 내용 다운로드 전 추가 대기
-                        time.sleep(random.uniform(1, 3))
+                        # 자막 내용 다운로드 전 추가 대기 및 준비
+                        st.info("⬇️ 자막 내용 다운로드 중...")
+                        time.sleep(random.uniform(2, 4))
                         
-                        # 자막 내용 다운로드 (재시도 로직 포함)
+                        # 자막 내용 다운로드
                         transcript_data = selected_transcript.fetch()
                         
                         # 데이터 유효성 검사
@@ -149,19 +191,22 @@ def get_transcript(video_id):
                         transcript_type = "수동 생성" if not selected_transcript.is_generated else "자동 생성"
                         lang_info = f"{selected_transcript.language} ({selected_transcript.language_code})"
                         
-                        # 성공시 원래 requests.get 복원
-                        requests.get = original_get
+                        # 성공시 패치 복원
+                        if patch_info:
+                            restore_requests(*patch_info)
                         
+                        st.success(f"✅ 자막 다운로드 성공! (시도 {attempt + 1}회)")
                         return full_text, f"{transcript_type} - {lang_info}"
                         
                     except Exception as fetch_error:
                         error_msg = str(fetch_error).lower()
+                        st.warning(f"🔍 fetch 오류 분석: {str(fetch_error)[:100]}...")
                         
-                        # XML 파싱 오류나 네트워크 오류 감지
+                        # XML 파싱 오류
                         if any(keyword in error_msg for keyword in 
                                ['no element found', 'xml', 'parse', 'column 0', 'line 1']):
                             if attempt < max_attempts - 1:
-                                st.warning(f"XML 파싱 오류 - 재시도 중... ({fetch_error})")
+                                st.warning(f"XML 파싱 오류 - 새로운 IP로 재시도...")
                                 continue
                             else:
                                 st.error("❌ 자막 데이터 파싱에 계속 실패합니다.")
@@ -170,52 +215,73 @@ def get_transcript(video_id):
                         # IP 차단 관련 오류
                         blocked_keywords = [
                             'blocked', 'ip', 'cloud', 'too many requests', 
-                            '429', '403', 'forbidden', 'rate limit', 'quota'
+                            '429', '403', 'forbidden', 'rate limit', 'quota',
+                            'request', 'ban', 'denied'
                         ]
                         
                         if any(keyword in error_msg for keyword in blocked_keywords):
                             if attempt < max_attempts - 1:
-                                st.warning(f"IP 차단 감지 - 헤더 변경 후 재시도... ({attempt + 1}/{max_attempts})")
+                                st.warning(f"🚫 IP 차단 감지 - 우회 방법 변경 중... ({attempt + 1}/{max_attempts})")
                                 continue
                             else:
-                                st.error("❌ 모든 우회 시도 실패: IP 차단이 지속됩니다.")
+                                st.error("❌ 모든 IP 우회 시도 실패")
                                 return None, None
-                        else:
-                            # 다른 종류의 오류는 즉시 재발생
-                            raise fetch_error
+                        
+                        # 네트워크 관련 오류
+                        network_keywords = ['timeout', 'connection', 'network', 'dns']
+                        if any(keyword in error_msg for keyword in network_keywords):
+                            if attempt < max_attempts - 1:
+                                st.warning(f"🌐 네트워크 오류 - 재시도...")
+                                continue
+                            else:
+                                st.error("❌ 네트워크 연결 문제가 지속됩니다.")
+                                return None, None
+                        
+                        # 기타 오류는 즉시 재발생
+                        raise fetch_error
                 else:
                     st.error("❌ 사용 가능한 자막을 찾을 수 없습니다.")
                     return None, None
             
             finally:
-                # 항상 원래 requests.get 복원
-                requests.get = original_get
+                # 패치 복원
+                if patch_info:
+                    restore_requests(*patch_info)
                 
         except TranscriptsDisabled:
+            if patch_info:
+                restore_requests(*patch_info)
             st.error("❌ 이 비디오는 자막이 비활성화되어 있습니다.")
             return None, None
         except NoTranscriptFound:
+            if patch_info:
+                restore_requests(*patch_info)
             st.error("❌ 이 비디오에서 자막을 찾을 수 없습니다.")
             return None, None
         except Exception as e:
+            if patch_info:
+                restore_requests(*patch_info)
+                
             error_msg = str(e).lower()
+            st.warning(f"🔍 전체 오류 분석: {str(e)[:100]}...")
             
             # IP 차단 관련 에러 확인
             blocked_keywords = [
                 'blocked', 'ip', 'cloud', 'too many requests', 
-                '429', '403', 'forbidden', 'rate limit', 'quota'
+                '429', '403', 'forbidden', 'rate limit', 'quota',
+                'request', 'ban', 'denied'
             ]
             
             if any(keyword in error_msg for keyword in blocked_keywords):
                 if attempt < max_attempts - 1:
-                    st.warning(f"IP 차단 감지 - 우회 시도 중... ({attempt + 1}/{max_attempts})")
+                    st.warning(f"🔄 IP 차단 우회 재시도... ({attempt + 1}/{max_attempts})")
                     continue
                 else:
-                    st.error("❌ 모든 IP 우회 시도가 실패했습니다.")
+                    st.error("❌ 모든 IP 우회 방법이 실패했습니다.")
                     st.info("💡 해결방법: 몇 시간 후 다시 시도하거나 VPN을 사용해보세요.")
                     return None, None
             else:
-                st.error(f"❌ 자막 추출 중 오류: {e}")
+                st.error(f"❌ 예상치 못한 오류: {e}")
                 return None, None
     
     # 모든 시도 실패
