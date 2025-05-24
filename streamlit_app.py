@@ -6,7 +6,6 @@ from urllib.parse import urlparse, parse_qs
 import xml.etree.ElementTree as ET
 import html
 import json
-import time
 
 def extract_video_id(url):
     """YouTube URL에서 비디오 ID 추출"""
@@ -35,18 +34,92 @@ def extract_video_id(url):
     else:
         return None
 
-def get_transcript_method1(video_id):
-    """방법 1: YouTube timedtext API 직접 호출"""
+def get_transcript(video_id):
+    """자막 가져오기 - 간단하고 효과적인 방법"""
+    
+    # 방법 1: 페이지 스크래핑으로 captionTracks 찾기
     try:
-        st.info("🔄 방법 1: timedtext API 시도 중...")
-        
-        list_url = f"https://www.youtube.com/api/timedtext?type=list&v={video_id}"
+        url = f"https://www.youtube.com/watch?v={video_id}"
         headers = {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-            'Accept-Language': 'ko-KR,ko;q=0.9,en-US;q=0.8,en;q=0.7'
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
         }
         
-        response = requests.get(list_url, headers=headers, timeout=15)
+        response = requests.get(url, headers=headers, timeout=15)
+        
+        if response.status_code == 200:
+            page_content = response.text
+            
+            # captionTracks 패턴 찾기
+            match = re.search(r'"captionTracks":\s*(\[.*?\])', page_content)
+            
+            if match:
+                try:
+                    tracks_str = match.group(1).encode('utf-8').decode('unicode_escape')
+                    tracks = json.loads(tracks_str)
+                    
+                    if tracks:
+                        # 수동 생성 자막 우선 (kind가 'asr'이 아닌 것)
+                        manual_track = None
+                        auto_track = None
+                        
+                        for track in tracks:
+                            if 'baseUrl' in track:
+                                if track.get('kind') != 'asr':
+                                    manual_track = track
+                                    break
+                                else:
+                                    if auto_track is None:
+                                        auto_track = track
+                        
+                        selected_track = manual_track if manual_track else auto_track
+                        
+                        if selected_track:
+                            caption_url = selected_track['baseUrl']
+                            lang = selected_track.get('languageCode', 'unknown')
+                            track_type = "수동" if selected_track.get('kind') != 'asr' else "자동"
+                            
+                            # 자막 다운로드
+                            caption_response = requests.get(caption_url, headers=headers, timeout=10)
+                            
+                            if caption_response.status_code == 200:
+                                # XML에서 텍스트 추출
+                                try:
+                                    root = ET.fromstring(caption_response.text)
+                                    texts = []
+                                    
+                                    for elem in root.findall('.//text'):
+                                        if elem.text:
+                                            clean_text = html.unescape(elem.text.strip())
+                                            texts.append(clean_text)
+                                    
+                                    if texts:
+                                        full_text = ' '.join(texts)
+                                        full_text = re.sub(r'\s+', ' ', full_text).strip()
+                                        
+                                        if len(full_text) > 50:
+                                            return full_text, f"{track_type} 생성 ({lang})"
+                                            
+                                except ET.ParseError:
+                                    # XML 파싱 실패시 원본 텍스트에서 추출 시도
+                                    text_content = re.sub(r'<[^>]+>', '', caption_response.text)
+                                    text_content = html.unescape(text_content).strip()
+                                    if len(text_content) > 50:
+                                        return text_content, f"{track_type} 생성 ({lang})"
+                                        
+                except json.JSONDecodeError:
+                    pass
+    
+    except Exception:
+        pass
+    
+    # 방법 2: timedtext API 시도
+    try:
+        list_url = f"https://www.youtube.com/api/timedtext?type=list&v={video_id}"
+        headers = {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+        }
+        
+        response = requests.get(list_url, headers=headers, timeout=10)
         
         if response.status_code == 200 and response.text.strip():
             try:
@@ -54,249 +127,57 @@ def get_transcript_method1(video_id):
                 tracks = root.findall('.//track')
                 
                 if tracks:
-                    st.success(f"✅ {len(tracks)}개의 자막 트랙 발견")
-                    
-                    # 수동 생성 자막 우선 검색
-                    manual_tracks = [t for t in tracks if t.get('kind') != 'asr']
-                    auto_tracks = [t for t in tracks if t.get('kind') == 'asr']
-                    
+                    # 수동 생성 우선
                     selected_track = None
                     track_type = None
                     
-                    if manual_tracks:
-                        selected_track = manual_tracks[0]
-                        track_type = "수동 생성"
-                        st.info("📝 수동 생성 자막 선택")
-                    elif auto_tracks:
-                        selected_track = auto_tracks[0]
-                        track_type = "자동 생성"
-                        st.info("🤖 자동 생성 자막 선택")
+                    for track in tracks:
+                        if track.get('kind') != 'asr':
+                            selected_track = track
+                            track_type = "수동"
+                            break
                     
-                    if selected_track is not None:
+                    if not selected_track:
+                        for track in tracks:
+                            if track.get('kind') == 'asr':
+                                selected_track = track
+                                track_type = "자동"
+                                break
+                    
+                    if selected_track:
                         lang_code = selected_track.get('lang_code', 'unknown')
-                        
-                        # 자막 내용 다운로드
                         caption_url = f"https://www.youtube.com/api/timedtext?lang={lang_code}&v={video_id}"
+                        
                         if selected_track.get('kind') == 'asr':
                             caption_url += "&kind=asr"
                         
-                        caption_response = requests.get(caption_url, headers=headers, timeout=15)
+                        caption_response = requests.get(caption_url, headers=headers, timeout=10)
                         
                         if caption_response.status_code == 200:
-                            return parse_xml_transcript(caption_response.text, f"{track_type} ({lang_code})")
-                            
-            except ET.ParseError as e:
-                st.warning(f"XML 파싱 오류: {e}")
-        
-        st.warning("❌ 방법 1 실패")
-        return None, None
-        
-    except Exception as e:
-        st.warning(f"❌ 방법 1 오류: {e}")
-        return None, None
-
-def get_transcript_method2(video_id):
-    """방법 2: YouTube 페이지 스크래핑"""
-    try:
-        st.info("🔄 방법 2: 페이지 스크래핑 시도 중...")
-        
-        url = f"https://www.youtube.com/watch?v={video_id}"
-        headers = {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-            'Accept-Language': 'ko-KR,ko;q=0.9,en-US;q=0.8,en;q=0.7',
-            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8'
-        }
-        
-        response = requests.get(url, headers=headers, timeout=20)
-        
-        if response.status_code == 200:
-            page_content = response.text
-            
-            # 여러 패턴으로 captionTracks 찾기
-            patterns = [
-                r'"captionTracks":\s*(\[.*?\])',
-                r'"captions":\s*\{[^}]*"playerCaptionsTracklistRenderer":\s*\{[^}]*"captionTracks":\s*(\[.*?\])',
-                r'captionTracks["\']:\s*(\[.*?\])'
-            ]
-            
-            for pattern in patterns:
-                match = re.search(pattern, page_content, re.DOTALL)
-                if match:
-                    try:
-                        tracks_str = match.group(1)
-                        # 유니코드 이스케이프 처리
-                        tracks_str = tracks_str.encode('utf-8').decode('unicode_escape')
-                        tracks = json.loads(tracks_str)
-                        
-                        if tracks:
-                            st.success(f"✅ {len(tracks)}개의 자막 트랙 발견")
-                            
-                            # 수동 생성 자막 우선
-                            manual_tracks = [t for t in tracks if t.get('kind') != 'asr' and 'baseUrl' in t]
-                            auto_tracks = [t for t in tracks if t.get('kind') == 'asr' and 'baseUrl' in t]
-                            
-                            selected_track = None
-                            track_type = None
-                            
-                            if manual_tracks:
-                                selected_track = manual_tracks[0]
-                                track_type = "수동 생성"
-                                st.info("📝 수동 생성 자막 선택")
-                            elif auto_tracks:
-                                selected_track = auto_tracks[0]
-                                track_type = "자동 생성"
-                                st.info("🤖 자동 생성 자막 선택")
-                            
-                            if selected_track and 'baseUrl' in selected_track:
-                                caption_url = selected_track['baseUrl']
-                                lang = selected_track.get('languageCode', 'unknown')
+                            try:
+                                root = ET.fromstring(caption_response.text)
+                                texts = []
                                 
-                                caption_response = requests.get(caption_url, headers=headers, timeout=15)
+                                for elem in root.findall('.//text'):
+                                    if elem.text:
+                                        clean_text = html.unescape(elem.text.strip())
+                                        texts.append(clean_text)
                                 
-                                if caption_response.status_code == 200:
-                                    return parse_xml_transcript(caption_response.text, f"{track_type} ({lang})")
+                                if texts:
+                                    full_text = ' '.join(texts)
+                                    full_text = re.sub(r'\s+', ' ', full_text).strip()
                                     
-                    except (json.JSONDecodeError, KeyError) as e:
-                        continue
-            
-        st.warning("❌ 방법 2 실패")
-        return None, None
-        
-    except Exception as e:
-        st.warning(f"❌ 방법 2 오류: {e}")
-        return None, None
-
-def get_transcript_method3(video_id):
-    """방법 3: 대체 스크래핑 방법"""
-    try:
-        st.info("🔄 방법 3: 대체 스크래핑 시도 중...")
-        
-        # 다른 User-Agent로 시도
-        headers = {
-            'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-            'Accept': '*/*',
-            'Accept-Language': 'en-US,en;q=0.5',
-            'Referer': 'https://www.youtube.com/',
-        }
-        
-        # 임베드 페이지에서 시도
-        embed_url = f"https://www.youtube.com/embed/{video_id}"
-        response = requests.get(embed_url, headers=headers, timeout=15)
-        
-        if response.status_code == 200:
-            content = response.text
-            
-            # 다양한 패턴으로 시도
-            patterns = [
-                r'"captions".*?"captionTracks":\s*(\[.*?\])',
-                r'captionTracks["\']?\s*:\s*(\[.*?\])',
-                r'"playerCaptionsTracklistRenderer".*?"captionTracks":\s*(\[.*?\])'
-            ]
-            
-            for pattern in patterns:
-                match = re.search(pattern, content, re.DOTALL)
-                if match:
-                    try:
-                        tracks_str = match.group(1)
-                        tracks_str = tracks_str.encode('utf-8').decode('unicode_escape')
-                        tracks = json.loads(tracks_str)
-                        
-                        if tracks:
-                            st.success(f"✅ {len(tracks)}개의 자막 트랙 발견 (임베드)")
-                            
-                            # 수동 생성 우선
-                            for track in tracks:
-                                if 'baseUrl' in track and track.get('kind') != 'asr':
-                                    caption_url = track['baseUrl']
-                                    lang = track.get('languageCode', 'unknown')
-                                    
-                                    caption_response = requests.get(caption_url, headers=headers, timeout=15)
-                                    if caption_response.status_code == 200:
-                                        st.info("📝 수동 생성 자막 선택")
-                                        return parse_xml_transcript(caption_response.text, f"수동 생성 ({lang})")
-                            
-                            # 자동 생성으로 폴백
-                            for track in tracks:
-                                if 'baseUrl' in track and track.get('kind') == 'asr':
-                                    caption_url = track['baseUrl']
-                                    lang = track.get('languageCode', 'unknown')
-                                    
-                                    caption_response = requests.get(caption_url, headers=headers, timeout=15)
-                                    if caption_response.status_code == 200:
-                                        st.info("🤖 자동 생성 자막 선택")
-                                        return parse_xml_transcript(caption_response.text, f"자동 생성 ({lang})")
+                                    if len(full_text) > 50:
+                                        return full_text, f"{track_type} 생성 ({lang_code})"
                                         
-                    except (json.JSONDecodeError, KeyError):
-                        continue
-        
-        st.warning("❌ 방법 3 실패")
-        return None, None
-        
-    except Exception as e:
-        st.warning(f"❌ 방법 3 오류: {e}")
-        return None, None
-
-def parse_xml_transcript(xml_content, method_info):
-    """XML 자막 파싱"""
-    try:
-        root = ET.fromstring(xml_content)
-        texts = []
-        
-        # 다양한 XML 태그 시도
-        for tag in ['text', 'p', 's', 'span']:
-            elements = root.findall(f'.//{tag}')
-            if elements:
-                for elem in elements:
-                    if elem.text and elem.text.strip():
-                        clean_text = html.unescape(elem.text.strip())
-                        # 줄바꿈 문자 제거
-                        clean_text = re.sub(r'\n+', ' ', clean_text)
-                        texts.append(clean_text)
-                break
-        
-        if texts:
-            full_text = ' '.join(texts)
-            # 중복 공백 제거
-            full_text = re.sub(r'\s+', ' ', full_text).strip()
-            
-            if len(full_text) > 50:  # 최소 길이 체크
-                return full_text, method_info
-        
-        return None, None
-        
-    except ET.ParseError as e:
-        st.warning(f"XML 파싱 실패: {e}")
-        # XML이 아닐 수도 있으니 텍스트 그대로 반환 시도
-        if xml_content and len(xml_content) > 50:
-            clean_text = html.unescape(xml_content)
-            clean_text = re.sub(r'<[^>]+>', '', clean_text)  # HTML 태그 제거
-            clean_text = re.sub(r'\s+', ' ', clean_text).strip()
-            if len(clean_text) > 50:
-                return clean_text, method_info
-        return None, None
-
-def get_transcript(video_id):
-    """모든 방법을 순차적으로 시도하여 자막 가져오기"""
-    methods = [
-        get_transcript_method1,
-        get_transcript_method2,
-        get_transcript_method3
-    ]
-    
-    for i, method in enumerate(methods, 1):
-        try:
-            transcript_text, method_info = method(video_id)
-            if transcript_text:
-                st.success(f"✅ 방법 {i} 성공! ({method_info})")
-                return transcript_text, method_info
-            
-            # 실패 시 잠시 대기
-            if i < len(methods):
-                time.sleep(1)
+                            except ET.ParseError:
+                                pass
+                                
+            except ET.ParseError:
+                pass
                 
-        except Exception as e:
-            st.warning(f"방법 {i} 예외 발생: {e}")
-            continue
+    except Exception:
+        pass
     
     return None, None
 
@@ -363,28 +244,20 @@ def main():
         st.info(f"🎯 비디오 ID: {video_id}")
         
         # 자막 추출
-        with st.spinner("자막 추출 중... (여러 방법을 순차적으로 시도합니다)"):
+        with st.spinner("자막 추출 중..."):
             transcript_text, method = get_transcript(video_id)
         
         if not transcript_text:
-            st.error("❌ 모든 방법으로 자막 추출에 실패했습니다.")
-            with st.expander("해결 방법", expanded=True):
+            st.error("❌ 자막을 가져올 수 없습니다.")
+            with st.expander("💡 해결 방법"):
                 st.markdown("""
-                **가능한 원인:**
-                - 비디오에 자막이 없음 (자동 생성 자막도 없음)
-                - 비디오가 비공개 또는 연령 제한
-                - 지역 제한으로 접근 불가
-                - YouTube의 일시적인 서비스 제한
-                
-                **해결 방법:**
-                - 다른 공개 비디오로 시도
-                - 자막이 확실히 있는 비디오 선택
-                - 몇 분 후 다시 시도
+                - 비디오에 자막이 있는지 확인
+                - 비디오가 공개 상태인지 확인
+                - 다른 비디오로 시도
                 """)
             return
         
         st.success(f"✅ 자막 추출 성공! ({method})")
-        st.info(f"📊 자막 길이: {len(transcript_text):,}자")
         
         col1, col2 = st.columns(2)
         
