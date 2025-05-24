@@ -6,8 +6,8 @@ from urllib.parse import urlparse, parse_qs
 import random
 import time
 from youtube_transcript_api import YouTubeTranscriptApi, TranscriptsDisabled, NoTranscriptFound
-from youtube_transcript_api._api import _TranscriptApi
 from youtube_transcript_api._errors import RequestBlockedException, TooManyRequestsException
+import youtube_transcript_api
 
 def extract_video_id(url):
     """YouTube URL에서 비디오 ID 추출"""
@@ -68,35 +68,38 @@ def get_random_headers():
         'Sec-Fetch-Mode': 'navigate',
         'Sec-Fetch-Site': 'none',
         'Sec-Fetch-User': '?1',
-        'Cache-Control': 'max-age=0',
-        'sec-ch-ua': '"Not_A Brand";v="8", "Chromium";v="120", "Google Chrome";v="120"',
-        'sec-ch-ua-mobile': '?0' if 'Mobile' not in random.choice(user_agents) else '?1',
-        'sec-ch-ua-platform': f'"{random.choice(["Windows", "macOS", "Linux"])}"'
+        'Cache-Control': 'max-age=0'
     }
 
-def get_free_proxies():
-    """무료 프록시 목록 (실제 사용시 더 신뢰할 수 있는 프록시 서비스 권장)"""
-    return [
-        None,  # 프록시 없이 먼저 시도
-        # 여기에 실제 프록시를 추가할 수 있습니다
-    ]
+def patch_requests_session():
+    """requests 모듈의 기본 세션을 패치하여 헤더 변경"""
+    original_session_init = requests.Session.__init__
+    
+    def new_session_init(self):
+        original_session_init(self)
+        # 랜덤 헤더 적용
+        headers = get_random_headers()
+        self.headers.update(headers)
+        
+        # 쿠키 설정
+        self.cookies.update({
+            'CONSENT': 'YES+cb.20210328-17-p0.en+FX+1',
+            'SOCS': 'CAI',
+            'YSC': f'random_value_{random.randint(1000, 9999)}'
+        })
+    
+    # 패치 적용
+    requests.Session.__init__ = new_session_init
+    return original_session_init
 
-def create_custom_session():
-    """커스텀 세션 생성 (IP 차단 우회용)"""
-    session = requests.Session()
-    session.headers.update(get_random_headers())
-    
-    # 쿠키 설정 (선택적)
-    session.cookies.update({
-        'CONSENT': 'YES+cb.20210328-17-p0.en+FX+1',
-        'SOCS': 'CAI',
-        'YSC': 'random_value_' + str(random.randint(1000, 9999))
-    })
-    
-    return session
+def restore_requests_session(original_init):
+    """원래 세션으로 복구"""
+    requests.Session.__init__ = original_init
 
 def get_transcript_with_retry(video_id, max_attempts=5):
     """재시도 로직과 IP 우회를 포함한 자막 추출"""
+    
+    original_session_init = None
     
     for attempt in range(max_attempts):
         try:
@@ -107,12 +110,13 @@ def get_transcript_with_retry(video_id, max_attempts=5):
             else:
                 st.info(f"🔄 시도 {attempt + 1}/{max_attempts}")
             
-            # 랜덤 헤더로 세션 생성
-            custom_session = create_custom_session()
-            
-            # youtube-transcript-api의 내부 세션을 커스텀 세션으로 교체
-            original_session = requests.Session()
-            _TranscriptApi._session = custom_session
+            # 각 시도마다 새로운 랜덤 헤더로 requests 세션 패치
+            if original_session_init is None:
+                original_session_init = patch_requests_session()
+            else:
+                # 이미 패치된 경우, 새로운 헤더로 다시 패치
+                restore_requests_session(original_session_init)
+                patch_requests_session()
             
             try:
                 # 자막 목록 가져오기
@@ -150,49 +154,122 @@ def get_transcript_with_retry(video_id, max_attempts=5):
                     lang_info = f"({selected_transcript.language_code})"
                     
                     st.success(f"✅ 성공! 시도 {attempt + 1}회만에 자막 추출")
+                    
+                    # 세션 복구
+                    if original_session_init:
+                        restore_requests_session(original_session_init)
+                    
                     return full_text, f"{transcript_type} {lang_info}"
                 else:
                     st.warning("사용 가능한 자막이 없습니다.")
+                    if original_session_init:
+                        restore_requests_session(original_session_init)
                     return None, None
                     
-            finally:
-                # 원래 세션으로 복구
-                _TranscriptApi._session = original_session
+            except Exception as inner_e:
+                # 내부 예외는 다시 raise하여 외부에서 처리
+                raise inner_e
                 
         except (RequestBlockedException, TooManyRequestsException) as e:
             st.warning(f"IP 차단 또는 요청 한도 초과 (시도 {attempt + 1})")
             if attempt == max_attempts - 1:
                 st.error("모든 시도 실패: IP가 차단되었습니다.")
+                if original_session_init:
+                    restore_requests_session(original_session_init)
                 return None, None
             continue
             
         except TranscriptsDisabled:
             st.warning("이 비디오는 자막이 비활성화되어 있습니다.")
+            if original_session_init:
+                restore_requests_session(original_session_init)
             return None, None
             
         except NoTranscriptFound:
             st.warning("이 비디오에서 자막을 찾을 수 없습니다.")
+            if original_session_init:
+                restore_requests_session(original_session_init)
             return None, None
             
         except Exception as e:
             error_msg = str(e).lower()
             
             # IP 차단 관련 에러 확인
-            if any(keyword in error_msg for keyword in ['blocked', 'ip', 'cloud', 'too many requests']):
+            if any(keyword in error_msg for keyword in 
+                   ['blocked', 'ip', 'cloud', 'too many requests', 'request', '429', '403']):
                 st.warning(f"IP 관련 오류 (시도 {attempt + 1}): {str(e)[:100]}...")
                 if attempt == max_attempts - 1:
                     st.error("IP 차단으로 모든 시도 실패")
+                    if original_session_init:
+                        restore_requests_session(original_session_init)
                     return None, None
                 continue
             else:
                 st.error(f"자막 추출 중 오류: {e}")
+                if original_session_init:
+                    restore_requests_session(original_session_init)
                 return None, None
     
+    if original_session_init:
+        restore_requests_session(original_session_init)
     return None, None
 
+def get_transcript_simple(video_id):
+    """간단한 자막 추출 (우회 기능 없이)"""
+    try:
+        st.info("🔄 기본 방법으로 자막 추출 시도...")
+        
+        # 기본 방법으로 시도
+        transcript_list = YouTubeTranscriptApi.list_transcripts(video_id)
+        
+        # 수동 생성 자막 우선
+        selected_transcript = None
+        transcript_type = None
+        
+        for transcript in transcript_list:
+            if not transcript.is_generated:
+                selected_transcript = transcript
+                transcript_type = "수동 생성"
+                break
+        
+        if not selected_transcript:
+            for transcript in transcript_list:
+                if transcript.is_generated:
+                    selected_transcript = transcript
+                    transcript_type = "자동 생성"
+                    break
+        
+        if selected_transcript:
+            transcript_data = selected_transcript.fetch()
+            full_text = ' '.join([item['text'] for item in transcript_data])
+            lang_info = f"({selected_transcript.language_code})"
+            
+            st.success("✅ 기본 방법으로 자막 추출 성공!")
+            return full_text, f"{transcript_type} {lang_info}"
+        
+        return None, None
+        
+    except (RequestBlockedException, TooManyRequestsException):
+        st.warning("⚠️ IP 차단 감지 - 우회 모드로 전환합니다...")
+        return get_transcript_with_retry(video_id)
+        
+    except (TranscriptsDisabled, NoTranscriptFound) as e:
+        st.warning(f"자막 없음: {e}")
+        return None, None
+        
+    except Exception as e:
+        error_msg = str(e).lower()
+        if any(keyword in error_msg for keyword in 
+               ['blocked', 'ip', 'cloud', 'too many requests']):
+            st.warning("⚠️ IP 차단 가능성 - 우회 모드로 전환합니다...")
+            return get_transcript_with_retry(video_id)
+        else:
+            st.error(f"자막 추출 오류: {e}")
+            return None, None
+
 def get_transcript(video_id):
-    """메인 자막 추출 함수"""
-    return get_transcript_with_retry(video_id)
+    """메인 자막 추출 함수 - 기본 방법 먼저 시도, 필요시 우회"""
+    return get_transcript_simple(video_id)
 
 def summarize_text(text, api_key):
     """Gemini로 요약 생성"""
@@ -232,7 +309,7 @@ def main():
     
     st.title("📺 YouTube 자막 요약기")
     st.markdown("YouTube 비디오의 자막을 추출하고 Gemini AI로 요약합니다.")
-    st.caption("🛡️ youtube-transcript-api + IP 차단 우회 기능")
+    st.caption("🛡️ youtube-transcript-api + 스마트 IP 차단 우회")
     
     gemini_api_key = st.text_input(
         "🔑 Gemini API Key",
@@ -244,11 +321,6 @@ def main():
         "🎥 YouTube URL 또는 비디오 ID",
         placeholder="예: https://www.youtube.com/watch?v=dQw4w9WgXcQ"
     )
-    
-    # 고급 설정
-    with st.expander("🔧 고급 설정"):
-        max_attempts = st.slider("최대 재시도 횟수", 1, 10, 5)
-        st.caption("IP 차단 시 재시도할 최대 횟수를 설정합니다.")
     
     if st.button("🚀 자막 추출 및 요약", type="primary", disabled=(not gemini_api_key)):
         if not video_input:
@@ -263,22 +335,22 @@ def main():
         st.info(f"🎯 비디오 ID: {video_id}")
         
         # 자막 추출
-        with st.spinner("자막 추출 중... (IP 차단 우회 기능 활성화)"):
-            transcript_text, method = get_transcript_with_retry(video_id, max_attempts)
+        with st.spinner("자막 추출 중... (필요시 IP 차단 우회 모드 자동 활성화)"):
+            transcript_text, method = get_transcript(video_id)
         
         if not transcript_text:
             st.error("❌ 자막 추출에 실패했습니다.")
             with st.expander("💡 해결 방법"):
                 st.markdown("""
-                **IP 차단 문제 해결:**
-                - 최대 재시도 횟수를 늘려보세요 (고급 설정)
-                - 몇 시간 후 다시 시도해보세요
-                - 다른 네트워크 환경에서 시도해보세요
+                **일반적인 해결 방법:**
+                - 비디오에 자막이 실제로 있는지 확인
+                - 비디오가 공개 상태인지 확인 (비공개/연령제한 불가)
+                - 다른 자막이 있는 비디오로 시도
                 
-                **기타 문제:**
-                - 비디오에 자막이 있는지 확인
-                - 비디오가 공개 상태인지 확인
-                - 다른 비디오로 시도
+                **IP 차단 관련:**
+                - 몇 시간 후 다시 시도
+                - 다른 네트워크 환경에서 시도
+                - VPN 사용 고려
                 """)
             return
         
