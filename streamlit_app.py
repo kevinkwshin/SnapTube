@@ -6,8 +6,6 @@ from urllib.parse import urlparse, parse_qs
 import random
 import time
 from youtube_transcript_api import YouTubeTranscriptApi, TranscriptsDisabled, NoTranscriptFound
-from youtube_transcript_api._errors import RequestBlockedException, TooManyRequestsException
-import youtube_transcript_api
 
 def extract_video_id(url):
     """YouTube URL에서 비디오 ID 추출"""
@@ -166,38 +164,23 @@ def get_transcript_with_retry(video_id, max_attempts=5):
                         restore_requests_session(original_session_init)
                     return None, None
                     
-            except Exception as inner_e:
-                # 내부 예외는 다시 raise하여 외부에서 처리
-                raise inner_e
+        except (TranscriptsDisabled, NoTranscriptFound) as e:
+            st.warning(f"자막 문제: {e}")
+            if original_session_init:
+                restore_requests_session(original_session_init)
+            return None, None
                 
-        except (RequestBlockedException, TooManyRequestsException) as e:
-            st.warning(f"IP 차단 또는 요청 한도 초과 (시도 {attempt + 1})")
-            if attempt == max_attempts - 1:
-                st.error("모든 시도 실패: IP가 차단되었습니다.")
-                if original_session_init:
-                    restore_requests_session(original_session_init)
-                return None, None
-            continue
-            
-        except TranscriptsDisabled:
-            st.warning("이 비디오는 자막이 비활성화되어 있습니다.")
-            if original_session_init:
-                restore_requests_session(original_session_init)
-            return None, None
-            
-        except NoTranscriptFound:
-            st.warning("이 비디오에서 자막을 찾을 수 없습니다.")
-            if original_session_init:
-                restore_requests_session(original_session_init)
-            return None, None
-            
         except Exception as e:
             error_msg = str(e).lower()
             
-            # IP 차단 관련 에러 확인
-            if any(keyword in error_msg for keyword in 
-                   ['blocked', 'ip', 'cloud', 'too many requests', 'request', '429', '403']):
-                st.warning(f"IP 관련 오류 (시도 {attempt + 1}): {str(e)[:100]}...")
+            # IP 차단 관련 에러 문자열로 확인
+            blocked_keywords = [
+                'blocked', 'ip', 'cloud', 'too many requests', 'request', 
+                '429', '403', 'forbidden', 'rate limit', 'quota', 'ban'
+            ]
+            
+            if any(keyword in error_msg for keyword in blocked_keywords):
+                st.warning(f"IP 차단 감지 (시도 {attempt + 1}): {str(e)[:100]}...")
                 if attempt == max_attempts - 1:
                     st.error("IP 차단으로 모든 시도 실패")
                     if original_session_init:
@@ -249,18 +232,18 @@ def get_transcript_simple(video_id):
         
         return None, None
         
-    except (RequestBlockedException, TooManyRequestsException):
-        st.warning("⚠️ IP 차단 감지 - 우회 모드로 전환합니다...")
-        return get_transcript_with_retry(video_id)
-        
     except (TranscriptsDisabled, NoTranscriptFound) as e:
         st.warning(f"자막 없음: {e}")
         return None, None
         
     except Exception as e:
         error_msg = str(e).lower()
-        if any(keyword in error_msg for keyword in 
-               ['blocked', 'ip', 'cloud', 'too many requests']):
+        blocked_keywords = [
+            'blocked', 'ip', 'cloud', 'too many requests', 'request',
+            '429', '403', 'forbidden', 'rate limit', 'quota', 'ban'
+        ]
+        
+        if any(keyword in error_msg for keyword in blocked_keywords):
             st.warning("⚠️ IP 차단 가능성 - 우회 모드로 전환합니다...")
             return get_transcript_with_retry(video_id)
         else:
