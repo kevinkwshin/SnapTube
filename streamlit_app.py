@@ -208,19 +208,19 @@ def summarize_text(text, api_key):
             text = text[:30000]
             st.caption("자막이 너무 길어 앞부분만 요약에 사용합니다.")
         
-        model = genai.GenerativeModel('gemini-1.5-flash-latest')
+        model = genai.GenerativeModel('gemini-2.5-flash-latest')
         
-        prompt = f"""다음 YouTube 자막을 한국어로 요약해주세요:
+        prompt = f"""다음 YouTube 자막을 핵심요약을 가독성 좋게 번호를 매겨 정리해 주세요:
 
 자막 내용:
 {text}
 
 요약 형식:
-## 📌 주요 주제
-## 🔑 핵심 내용 (3-5개)
+## 📌 주요 주제 (간단한 요약 포함)
+## 🔑 핵심 내용
 ## 💡 결론 및 시사점
 
-한국어로 명확하고 간결하게 작성해주세요."""
+명확하고 간결하게 작성해주세요."""
         
         response = model.generate_content(prompt)
         return response.text
@@ -256,7 +256,7 @@ def main():
     
     video_input = st.text_input(
         "🎥 YouTube URL 또는 비디오 ID",
-        placeholder="예: https://www.youtube.com/watch?v=dQw4w9WgXcQ"
+        placeholder="예: https://www.youtube.com/watch?v=ABCDEFGHIJK"
     )
     
     if st.button("🚀 자막 추출 및 요약", type="primary", disabled=(not gemini_api_key)):
