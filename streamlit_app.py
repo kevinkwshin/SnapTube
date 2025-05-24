@@ -97,15 +97,27 @@ def fetch_transcript(video_id: str) -> str:
     return " ".join(chunk["text"] for chunk in transcript)
 
 @st.cache_resource(show_spinner=False)
-def load_model(api_key: str):
-    """Singleton Gemini model instance – cached per unique API key."""
-    os.environ["GOOGLE_API_KEY"] = api_key  # used by backend HTTP client
-    genai.configure(api_key=api_key)
-    return genai.GenerativeModel("gemini-1.5-pro-latest")
-
 def summarize(text: str, api_key: str) -> str:
     """Summarise *text* using Gemini and return Markdown output."""
-    model = load_model(api_key)
+  
+    client = genai.Client(
+        api_key=api_key,
+    )
+
+    model = "gemini-2.5-flash-preview-05-20"
+    contents = [
+        types.Content(
+            role="user",
+            parts=[
+                types.Part.from_text(text=f'Summarize and Write the good readability Report with numberings of text below in their language as Markdown.\n {text}'),
+            ],
+        ),
+    ]
+    generate_content_config = types.GenerateContentConfig(
+        response_mime_type="text/plain",
+        system_instruction='You are a Professioal writer.',
+        temperature=0.1
+    )
 
     # Gemini can handle ~1 M tokens, but we keep prompts below 30k chars
     CHUNK = 15000
