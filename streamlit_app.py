@@ -114,8 +114,8 @@ def summarize_text(text, api_key):
 
 def main():
     st.set_page_config(page_title="YouTube 자막 AI 요약", page_icon="📺")
-    st.title("📺 YouTube 자막 AI 요약기 (로컬/Colab/Cloud 지원)")
-    st.caption("AI Studio API Key와 YouTube 주소를 입력하면 자막+요약을 바로 확인")
+    st.title("📺 SnapTube : 자막추출 AI 요약기")
+    st.caption("YouTube 주소를 입력하면 자막+요약을 바로 확인 (AI Studio API Key 필요)")
 
     api_key = st.text_input("🔑 Gemini AI Studio API Key", type="password")
     url = st.text_input("🎥 YouTube URL 또는 비디오 ID", placeholder="예: https://www.youtube.com/watch?v=dQw4w9WgXcQ")
