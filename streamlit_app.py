@@ -308,7 +308,8 @@ def main():
                 "📥 자막 다운로드",
                 transcript_text,
                 f"transcript_{video_id}.txt",
-                mime="text/plain"
+                mime="text/plain",
+                key="download_transcript"
             )
         
         with col2:
@@ -321,7 +322,8 @@ def main():
                 "📥 요약 다운로드",
                 summary,
                 f"summary_{video_id}.md",
-                mime="text/markdown"
+                mime="text/markdown",
+                key="download_summary"
             )
 
 if __name__ == "__main__":
