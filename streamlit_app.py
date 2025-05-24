@@ -208,7 +208,7 @@ def summarize_text(text, api_key):
             text = text[:30000]
             st.caption("자막이 너무 길어 앞부분만 요약에 사용합니다.")
         
-        model = genai.GenerativeModel('gemini-2.5-flash-latest')
+        model = genai.GenerativeModel('gemini-1.5-flash-latest')
         
         prompt = f"""다음 YouTube 자막을 핵심요약을 가독성 좋게 번호를 매겨 정리해 주세요:
 
