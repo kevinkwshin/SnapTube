@@ -180,43 +180,80 @@ def get_transcript(video_id):
     return None, None, None
 
 def summarize_text(text, api_key):
-    """Gemini로 요약 생성 - 안정적인 모델 사용"""
+    """Gemini로 요약 생성 - 개선된 버전"""
     try:
         genai.configure(api_key=api_key)
+        
+        # 텍스트 길이 제한 (토큰 한도 고려)
+        max_length = 30000  # 충분한 길이로 설정
+        if len(text) > max_length:
+            text = text[:max_length] + "..."
         
         # 안정적인 모델들을 순서대로 시도
         models = ['gemini-1.5-flash', 'gemini-1.5-pro', 'gemini-pro']
         
         for model_name in models:
             try:
-                model = genai.GenerativeModel(model_name)
+                model = genai.GenerativeModel(
+                    model_name,
+                    generation_config=genai.types.GenerationConfig(
+                        temperature=0.3,
+                        top_p=0.8,
+                        top_k=40,
+                        max_output_tokens=2048,
+                    )
+                )
                 
-                prompt = f"""
-다음 YouTube 비디오의 자막을 요약해주세요:
+                prompt = f"""다음은 YouTube 비디오의 자막입니다. 이를 한국어로 요약해주세요.
 
+자막 내용:
 {text}
 
 다음 형식으로 요약해주세요:
-## 📌 주요 주제
-## 🔑 핵심 내용 (3-5개 포인트)
-## 💡 결론 및 시사점
 
-한국어로 명확하고 간결하게 작성해주세요.
-"""
+## 📌 주요 주제
+비디오의 핵심 주제를 한 문장으로 설명해주세요.
+
+## 🔑 핵심 내용
+가장 중요한 내용 3-5개를 번호를 매겨 정리해주세요.
+1. 첫 번째 핵심 내용
+2. 두 번째 핵심 내용  
+3. 세 번째 핵심 내용
+(필요시 4-5개까지)
+
+## 💡 결론 및 시사점
+비디오에서 전달하고자 하는 메시지나 교훈을 정리해주세요.
+
+요약은 명확하고 간결하게 한국어로 작성해주세요."""
                 
                 response = model.generate_content(prompt)
-                return response.text
                 
-            except Exception as e:
-                if "not found" in str(e).lower():
-                    continue  # 다음 모델 시도
+                if response and response.text:
+                    return response.text
                 else:
-                    raise e
+                    continue  # 다음 모델 시도
+                
+            except Exception as model_error:
+                error_msg = str(model_error).lower()
+                if any(keyword in error_msg for keyword in ['not found', '404', 'unavailable']):
+                    continue  # 다음 모델 시도
+                elif 'quota' in error_msg or 'limit' in error_msg:
+                    return f"API 할당량을 초과했습니다. 잠시 후 다시 시도해주세요."
+                elif 'api_key' in error_msg or 'authentication' in error_msg:
+                    return f"API 키가 올바르지 않습니다. 다시 확인해주세요."
+                else:
+                    continue  # 다음 모델 시도
         
-        return "사용 가능한 Gemini 모델을 찾을 수 없습니다. API 키를 확인해주세요."
+        return "모든 Gemini 모델에서 요약 생성에 실패했습니다. API 키를 확인하거나 잠시 후 다시 시도해주세요."
         
     except Exception as e:
-        return f"요약 생성 실패: {str(e)}"
+        error_msg = str(e)
+        if 'api_key' in error_msg.lower():
+            return "❌ API 키 오류: Gemini API 키가 올바르지 않습니다."
+        elif 'quota' in error_msg.lower():
+            return "❌ 할당량 초과: API 사용량이 한도를 초과했습니다."
+        else:
+            return f"❌ 요약 생성 실패: {error_msg}"
 
 def main():
     st.set_page_config(
@@ -303,26 +340,10 @@ def main():
         # 성공
         st.success(f"✅ 자막 추출 성공! ({method}로 가져옴, {length:,}자)")
         
-        # 결과를 탭으로 표시
-        tab1, tab2 = st.tabs(["🤖 **AI 요약**", "📜 **원본 자막**"])
+        # 결과를 탭으로 표시 (원본 자막을 왼쪽에)
+        tab1, tab2 = st.tabs(["📜 **원본 자막**", "🤖 **AI 요약**"])
         
         with tab1:
-            with st.spinner("🤖 AI 요약 생성 중..."):
-                summary = summarize_text(transcript, gemini_api_key)
-            
-            st.markdown("### 🤖 AI 요약")
-            st.markdown(summary)
-            
-            # 요약 다운로드
-            st.download_button(
-                "📥 요약 다운로드",
-                summary,
-                f"youtube_summary_{video_id}.md",
-                mime="text/markdown",
-                use_container_width=True
-            )
-        
-        with tab2:
             st.markdown("### 📜 원본 자막")
             st.text_area(
                 "추출된 자막",
@@ -337,6 +358,22 @@ def main():
                 transcript,
                 f"youtube_transcript_{video_id}.txt",
                 mime="text/plain",
+                use_container_width=True
+            )
+        
+        with tab2:
+            with st.spinner("🤖 AI 요약 생성 중..."):
+                summary = summarize_text(transcript, gemini_api_key)
+            
+            st.markdown("### 🤖 AI 요약")
+            st.markdown(summary)
+            
+            # 요약 다운로드
+            st.download_button(
+                "📥 요약 다운로드",
+                summary,
+                f"youtube_summary_{video_id}.md",
+                mime="text/markdown",
                 use_container_width=True
             )
 
