@@ -7,7 +7,7 @@ import requests
 import random
 import time
 
-# NEW: Custom Session with default timeout
+# TimeoutSession class (as defined in the previous good answer)
 class TimeoutSession(requests.Session):
     def __init__(self, timeout=15, *args, **kwargs):
         super().__init__(*args, **kwargs)
@@ -17,6 +17,8 @@ class TimeoutSession(requests.Session):
         kwargs.setdefault('timeout', self.timeout)
         return super().request(method, url, **kwargs)
 
+# extract_video_id, get_random_headers, setup_custom_session (as defined previously)
+# ...
 def extract_video_id(url):
     """YouTube URL에서 비디오 ID 추출"""
     if not url:
@@ -59,100 +61,105 @@ def get_random_headers():
         'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7',
         'Accept-Language': 'en-US,en;q=0.9,ko-KR;q=0.8,ko;q=0.7',
         'Accept-Encoding': 'gzip, deflate, br',
-        'DNT': '1', # Do Not Track
+        'DNT': '1', 
         'Connection': 'keep-alive',
         'Upgrade-Insecure-Requests': '1',
         'Sec-Fetch-Dest': 'document',
         'Sec-Fetch-Mode': 'navigate',
-        'Sec-Fetch-Site': 'none', # Can be 'cross-site' or 'same-origin' depending on context if needed
+        'Sec-Fetch-Site': 'none',
         'Sec-Fetch-User': '?1',
-        'TE': 'trailers' # For transfer encoding
+        'TE': 'trailers'
     }
 
-# MODIFIED: Uses TimeoutSession
 def setup_custom_session():
     """프록시와 헤더를 설정한 세션 생성 (TimeoutSession 사용)"""
-    session = TimeoutSession(timeout=15) # Default timeout of 15 seconds
+    session = TimeoutSession(timeout=15) 
     session.headers.update(get_random_headers())
-    
-    # 쿠키 설정 (YouTube specific cookies can be important)
     session.cookies.update({
-        'CONSENT': 'YES+cb.20240101-17-p0.en+FX+000', # Example, might need dynamic fetching or more robust values
-        'SOCS': 'CAI', # Example
-        # 'PREF': 'f6=8&tz=Asia.Seoul', # Example for language/region preference
+        'CONSENT': 'YES+cb.20240101-17-p0.en+FX+000', 
+        'SOCS': 'CAI', 
     })
-    
     return session
 
-# REMOVED: patch_youtube_transcript_api() and restore_requests()
-# These are no longer needed as we pass the http_client directly.
-
-# MODIFIED: get_transcript to use http_client parameter
+# MODIFIED get_transcript function
 def get_transcript(video_id):
-    """YouTube Transcript API로 자막 가져오기 - 강화된 IP 차단 우회"""
+    """YouTube Transcript API로 자막 가져오기 - 명시적 반복 및 is_generated 확인 사용"""
     max_attempts = 5
-    
+    preferred_langs = ['ko', 'en']  # 선호 언어 순서 (한국어, 영어)
+
     for attempt in range(max_attempts):
         try:
             if attempt > 0:
-                delay = random.uniform(2, 5) * attempt  # 점진적으로 대기 시간 증가
+                delay = random.uniform(2, 5) * attempt
                 st.info(f"🔄 재시도 {attempt + 1}/{max_attempts} (대기: {delay:.1f}초)")
                 time.sleep(delay)
-            
+
             st.info(f"🛠️ 새로운 연결 설정 중... (시도 {attempt + 1})")
-            # 각 시도마다 새로운 세션 생성
             custom_session = setup_custom_session()
-            
-            # 사용 가능한 자막 목록 가져오기, custom_session을 http_client로 전달
+
             st.info("📋 자막 목록 조회 중...")
-            transcript_list = YouTubeTranscriptApi.list_transcripts(video_id, http_client=custom_session)
+            # YouTubeTranscriptApi.list_transcripts는 video_id에 대한 모든 Transcript 객체 목록을 반환
+            transcript_list_obj = YouTubeTranscriptApi.list_transcripts(video_id, http_client=custom_session)
             
-            manual_transcript = None
-            auto_transcript = None
-            preferred_langs = ['ko', 'en'] # 선호 언어 순서 (한국어, 영어)
+            # transcript_list_obj는 TranscriptList 객체이며, 이를 반복하여 개별 Transcript 객체에 접근 가능
+            # 또는 transcript_list_obj.find_manually_created_transcript 등 사용 가능
+            # 여기서는 사용자 요청에 따라 명시적으로 반복하겠습니다.
 
-            # 1. 선호하는 언어의 수동 자막 찾기
+            selected_transcript = None
+            
+            # 우선 순위:
+            # 1. 수동 생성, 선호 언어 (ko, en 순)
+            # 2. 자동 생성, 선호 언어 (ko, en 순)
+            # 3. 수동 생성, 기타 언어 (목록에서 처음 발견되는 것)
+            # 4. 자동 생성, 기타 언어 (목록에서 처음 발견되는 것)
+
+            # 1단계: 수동 생성, 선호 언어
+            st.info(f"🔍 1단계: 선호 언어({', '.join(preferred_langs)})의 '수동 생성' 자막 검색...")
             for lang_code in preferred_langs:
-                try:
-                    manual_transcript = transcript_list.find_manually_created_transcript([lang_code])
-                    st.info(f"📝 수동 생성 자막 ({manual_transcript.language_code}) 발견!")
+                for t in transcript_list_obj: # TranscriptList 객체를 직접 순회
+                    if not t.is_generated and t.language_code == lang_code:
+                        selected_transcript = t
+                        st.info(f"✔️ '수동 생성' 선호 자막 ({t.language_code}) 발견!")
+                        break
+                if selected_transcript:
                     break
-                except NoTranscriptFound:
-                    continue
             
-            # 2. 수동 자막 없으면, 선호하는 언어의 자동 자막 찾기
-            if not manual_transcript:
+            # 2단계: 자동 생성, 선호 언어
+            if not selected_transcript:
+                st.info(f"🔍 2단계: 선호 언어({', '.join(preferred_langs)})의 '자동 생성' 자막 검색...")
                 for lang_code in preferred_langs:
-                    try:
-                        auto_transcript = transcript_list.find_generated_transcript([lang_code])
-                        st.info(f"🤖 자동 생성 자막 ({auto_transcript.language_code}) 발견!")
-                        break
-                    except NoTranscriptFound:
-                        continue
-            
-            # 3. 그래도 없으면, 사용 가능한 아무 수동 자막
-            if not manual_transcript and not auto_transcript:
-                for t in transcript_list:
-                    if not t.is_generated:
-                        manual_transcript = t
-                        st.info(f"📝 기타 수동 생성 자막 ({manual_transcript.language_code}) 발견!")
-                        break
-            
-            # 4. 그래도 없으면, 사용 가능한 아무 자동 자막
-            if not manual_transcript and not auto_transcript:
-                 for t in transcript_list:
-                    if t.is_generated:
-                        auto_transcript = t
-                        st.info(f"🤖 기타 자동 생성 자막 ({auto_transcript.language_code}) 발견!")
+                    for t in transcript_list_obj:
+                        if t.is_generated and t.language_code == lang_code:
+                            selected_transcript = t
+                            st.info(f"✔️ '자동 생성' 선호 자막 ({t.language_code}) 발견!")
+                            break
+                    if selected_transcript:
                         break
 
-            selected_transcript = manual_transcript if manual_transcript else auto_transcript
+            # 3단계: 수동 생성, 기타 언어
+            if not selected_transcript:
+                st.info("🔍 3단계: 사용 가능한 다른 '수동 생성' 자막 검색...")
+                for t in transcript_list_obj:
+                    if not t.is_generated:
+                        selected_transcript = t
+                        st.info(f"✔️ 기타 '수동 생성' 자막 ({t.language_code}) 발견!")
+                        break
             
+            # 4단계: 자동 생성, 기타 언어
+            if not selected_transcript:
+                st.info("🔍 4단계: 사용 가능한 다른 '자동 생성' 자막 검색...")
+                for t in transcript_list_obj:
+                    if t.is_generated:
+                        selected_transcript = t
+                        st.info(f"✔️ 기타 '자동 생성' 자막 ({t.language_code}) 발견!")
+                        break
+
             if selected_transcript:
                 st.info(f"⬇️ '{selected_transcript.language} ({selected_transcript.language_code})' 자막 내용 다운로드 중...")
-                # 자막 내용 다운로드 (selected_transcript는 생성 시 custom_session을 이미 알고 있음)
+                # selected_transcript는 Transcript 객체이므로 .fetch() 메서드를 가짐
+                # list_transcripts에 http_client를 전달했으므로 fetch 시에도 해당 클라이언트 사용됨
                 transcript_data = selected_transcript.fetch()
-                
+
                 if not transcript_data or len(transcript_data) == 0:
                     if attempt < max_attempts - 1:
                         st.warning("빈 자막 데이터 - 재시도 중...")
@@ -160,53 +167,50 @@ def get_transcript(video_id):
                     else:
                         st.error("❌ 자막 데이터가 비어있습니다.")
                         return None, None
-                
+
                 full_text = ' '.join([item['text'] for item in transcript_data if 'text' in item])
-                
-                if not full_text or len(full_text.strip()) < 10: # 임계값 조정 가능
+
+                if not full_text or len(full_text.strip()) < 10:
                     if attempt < max_attempts - 1:
                         st.warning("자막 텍스트가 너무 짧거나 유효하지 않음 - 재시도 중...")
                         continue
                     else:
                         st.error("❌ 유효한 자막 텍스트를 찾을 수 없습니다.")
                         return None, None
-                
+
                 transcript_type = "수동 생성" if not selected_transcript.is_generated else "자동 생성"
                 lang_info = f"{selected_transcript.language} ({selected_transcript.language_code})"
-                
+
                 st.success(f"✅ 자막 다운로드 성공! (시도 {attempt + 1}회)")
                 return full_text, f"{transcript_type} - {lang_info}"
-            
             else:
-                # transcript_list는 있었지만, 원하는 조건의 자막이 없는 경우
-                st.error("❌ 사용 가능한 자막을 찾을 수 없습니다 (선호 언어 또는 어떤 자막도 없음).")
-                # 사용 가능한 모든 언어 코드를 보여주는 것이 도움이 될 수 있음
-                available_langs = [f"{t.language} ({t.language_code}, {'manual' if not t.is_generated else 'auto'})" for t in transcript_list]
-                if available_langs:
-                    st.info(f"사용 가능한 자막 언어: {', '.join(available_langs)}")
+                # transcript_list_obj 자체는 있었으나 조건에 맞는 자막이 없는 경우
+                st.error("❌ 우선순위에 맞는 자막을 찾을 수 없습니다.")
+                available_transcripts_info = []
+                for t_obj in transcript_list_obj:
+                     available_transcripts_info.append(
+                         f"{t_obj.language} ({t_obj.language_code}, {'수동' if not t_obj.is_generated else '자동'})"
+                     )
+                if available_transcripts_info:
+                    st.info(f"사용 가능한 전체 자막 목록: {', '.join(available_transcripts_info)}")
                 else:
-                    # 이 경우는 list_transcripts가 비어있었음을 의미하는데, NoTranscriptFound가 먼저 발생해야 함.
-                    # 그러나 방어적으로 추가.
-                    st.error("❌ 비디오에서 어떤 자막 목록도 반환되지 않았습니다.")
+                     # 이 경우는 NoTranscriptFound 예외에서 처리되어야 하지만, 방어적으로 추가
+                    st.info("이 비디오에는 어떤 자막도 없는 것 같습니다.")
                 return None, None
-                
+
         except TranscriptsDisabled:
             st.error("❌ 이 비디오는 자막이 비활성화되어 있습니다.")
             return None, None
-        except NoTranscriptFound:
-            st.error("❌ 이 비디오에서 요청한 조건의 자막을 찾을 수 없습니다.")
-            # 이 경우, video_id에 대해 어떠한 transcript도 list_transcripts에서 찾지 못했을 때 발생
-            # 예를 들어, 특정 언어를 지정하여 find_transcript를 호출했는데 없을 때도 발생할 수 있음.
-            # 위의 로직은 list_transcripts 후 순회하므로, list_transcripts 자체가 실패한 경우일 수 있음.
+        except NoTranscriptFound: # list_transcripts에서 아무것도 못 찾으면 발생
+            st.error(f"❌ 이 비디오 ID({video_id})에 대한 자막을 찾을 수 없습니다. ID를 확인하거나 영상에 자막이 있는지 확인해주세요.")
             return None, None
         except requests.exceptions.Timeout:
             st.warning(f"🌐 요청 시간 초과 - 재시도 중... ({attempt + 1}/{max_attempts})")
             if attempt >= max_attempts - 1:
                 st.error("❌ 요청 시간 초과가 지속됩니다.")
                 return None, None
-            continue # 다음 시도로 넘어감
+            continue 
         except requests.exceptions.RequestException as req_err:
-            # requests 관련 다른 예외 (ConnectionError 등)
             error_msg = str(req_err).lower()
             st.warning(f"🌐 네트워크 요청 오류: {str(req_err)[:100]}... - 재시도 중... ({attempt + 1}/{max_attempts})")
             if any(keyword in error_msg for keyword in ['429', '403', 'too many requests', 'forbidden', 'blocked']):
@@ -216,11 +220,9 @@ def get_transcript(video_id):
                 return None, None
             continue
         except Exception as e:
-            # youtube_transcript_api 내부 오류 또는 기타 예외
             error_msg = str(e).lower()
             st.warning(f"🔍 예상치 못한 오류 발생: {str(e)[:150]}...")
             
-            # XML 파싱 오류 등 라이브러리 내부 fetch 관련 오류일 수 있음
             if any(keyword in error_msg for keyword in ['no element found', 'xml', 'parse', 'column 0', 'line 1']):
                 if attempt < max_attempts - 1:
                     st.warning(f"XML 파싱 오류 감지 - 재시도 중...")
@@ -229,7 +231,6 @@ def get_transcript(video_id):
                     st.error("❌ 자막 데이터 파싱에 계속 실패합니다.")
                     return None, None
 
-            # IP 차단 관련 키워드 (더 일반적인 예외 메시지에서)
             blocked_keywords = [
                 'blocked', 'ip', 'cloud', 'too many requests', 
                 '429', '403', 'forbidden', 'rate limit', 'quota',
@@ -244,30 +245,24 @@ def get_transcript(video_id):
                     st.info("💡 해결방법: 잠시 후 다시 시도하거나, 네트워크 환경(예: VPN)을 변경해보세요.")
                     return None, None
             
-            # 위의 특정 예외들에서 걸리지 않은 경우
             if attempt < max_attempts - 1:
-                st.warning(f"🛠️ 오류로 인해 재시도... ({attempt + 1}/{max_attempts})")
+                st.warning(f"🛠️ 알 수 없는 오류로 인해 재시도... ({attempt + 1}/{max_attempts})")
                 continue
             else:
                 st.error(f"❌ 최종 시도 실패. 예상치 못한 오류: {e}")
                 return None, None
     
-    # 모든 시도 실패
     st.error("❌ 모든 재시도가 실패했습니다. 자막을 가져올 수 없습니다.")
     return None, None
 
-
+# summarize_text and main functions (as defined in the previous good answer)
+# ...
 def summarize_text(text, api_key):
     """Gemini로 요약 생성"""
     try:
         genai.configure(api_key=api_key)
         
-        # 텍스트 길이 제한 (Gemini 모델의 토큰 제한 고려)
-        # gemini-1.5-flash-latest는 컨텍스트 창이 크지만, 비용과 응답 시간 고려
-        # 대략 글자당 0.25~0.5 토큰으로 가정. 30000자는 약 7500~15000 토큰.
-        # 모델의 실제 토큰 제한은 더 클 수 있음 (예: 1M tokens for 1.5 flash)
-        # 여기서는 입력 텍스트의 과도한 길이를 방지하기 위한 일반적인 제한으로 둡니다.
-        max_len = 100000 # 입력 텍스트 길이 제한 증가 (약 10만자)
+        max_len = 100000 
         if len(text) > max_len:
             text = text[:max_len]
             st.caption(f"자막이 매우 길어 앞부분 {max_len}자만 요약에 사용합니다.")
@@ -292,7 +287,6 @@ def summarize_text(text, api_key):
         return response.text
         
     except Exception as e:
-        # Gemini API 관련 에러도 구체적으로 사용자에게 알리면 좋음
         st.error(f"요약 생성 중 오류 발생: {e}")
         if "API key not valid" in str(e):
             st.warning("Gemini API 키가 유효하지 않은 것 같습니다. 확인해주세요.")
@@ -314,7 +308,10 @@ def main():
     if 'gemini_api_key' not in st.session_state:
         st.session_state.gemini_api_key = ""
     if 'video_id_history' not in st.session_state:
-        st.session_state.video_id_history = [] # 최근 처리한 video_id 저장용
+        st.session_state.video_id_history = [] 
+    if 'current_video_input' not in st.session_state: # Ensure key exists
+        st.session_state.current_video_input = ""
+
 
     with st.sidebar:
         st.header("설정")
@@ -326,27 +323,28 @@ def main():
         )
         st.markdown("---")
         st.markdown("최근 5개 비디오 ID:")
-        for vid in reversed(st.session_state.video_id_history[-5:]):
-            if st.button(f"ID: {vid}", key=f"history_btn_{vid}", help=f"{vid} 다시 불러오기"):
-                 # Using query params to set the input field is tricky directly in Streamlit like this.
-                 # Instead, we can store it in session_state and use it.
+        # Display most recent 5, but ensure unique keys for buttons if IDs can repeat in history
+        # For simplicity, assuming video_id itself is unique enough for this display
+        for i, vid in enumerate(reversed(st.session_state.video_id_history[-5:])):
+            if st.button(f"ID: {vid}", key=f"history_btn_{vid}_{i}", help=f"{vid} 다시 불러오기"):
                  st.session_state.current_video_input = vid
+                 st.experimental_rerun() # Rerun to update the input field
 
 
     video_input_key = "video_input_field"
-    # Check if a history button was pressed to pre-fill the input
-    if 'current_video_input' in st.session_state and st.session_state.current_video_input:
-        default_video_input = st.session_state.current_video_input
-        st.session_state.current_video_input = "" # Clear after use
-    else:
-        default_video_input = ""
+    
+    # Use value from session_state if set by history button
+    current_input_value = st.session_state.current_video_input if st.session_state.current_video_input else ""
         
     video_input = st.text_input(
         "🎥 YouTube URL 또는 비디오 ID",
         placeholder="예: https://www.youtube.com/watch?v=dQw4w9WgXcQ 또는 dQw4w9WgXcQ",
-        value=default_video_input,
+        value=current_input_value, # Use the value from session state
         key=video_input_key
     )
+    # Clear current_video_input after using it so it doesn't persist on manual input changes
+    if st.session_state.current_video_input:
+        st.session_state.current_video_input = ""
     
     submit_button = st.button(
         "🚀 자막 추출 및 요약", 
@@ -355,7 +353,7 @@ def main():
     )
 
     if submit_button:
-        if not video_input: # 중복 체크지만 명시적으로
+        if not video_input: 
             st.error("YouTube URL 또는 비디오 ID를 입력해주세요!")
             return
         
@@ -367,11 +365,10 @@ def main():
         st.info(f"🎯 비디오 ID: {video_id}")
         if video_id not in st.session_state.video_id_history:
             st.session_state.video_id_history.append(video_id)
-            if len(st.session_state.video_id_history) > 10: # 최근 10개까지만 유지
+            if len(st.session_state.video_id_history) > 10: 
                 st.session_state.video_id_history.pop(0)
 
 
-        # UI 분리
         transcript_placeholder = st.empty()
         summary_placeholder = st.empty()
 
@@ -385,13 +382,11 @@ def main():
             summary_text_area = st.empty()
             download_summary_button = st.empty()
 
-        # 자막 추출
         with st.spinner("자막 추출 중... 이 작업은 몇 초에서 몇 분까지 소요될 수 있습니다."):
             transcript_text, method = get_transcript(video_id)
         
         if not transcript_text:
-            # get_transcript 내부에서 이미 에러 메시지 표시됨
-            with transcript_placeholder.container():
+            with transcript_placeholder.container(): # Ensure error message is in the right place
                  st.error("❌ 자막을 가져올 수 없습니다. 위의 로그를 확인해주세요.")
                  with st.expander("💡 해결 방법"):
                     st.markdown("""
@@ -405,18 +400,19 @@ def main():
                     - 다른 네트워크 환경(예: 다른 Wi-Fi, 모바일 핫스팟, VPN)에서 시도해보세요.
                     - 브라우저 확장 프로그램 (특히 광고 차단기, VPN 확장)을 일시적으로 비활성화 해보세요.
                     """)
-            return
+            return # Stop further processing
         
         st.success(f"✅ 자막 추출 성공! ({method})")
         
         with transcript_placeholder.container():
             st.markdown("### 📜 원본 자막")
-            transcript_text_area.text_area("자막 내용", transcript_text, height=300, key="transcript_content")
+            transcript_text_area.text_area("자막 내용", transcript_text, height=300, key="transcript_content_display")
             download_transcript_button.download_button(
                 "📥 자막 다운로드 (.txt)",
                 transcript_text,
                 f"transcript_{video_id}.txt",
-                mime="text/plain"
+                mime="text/plain",
+                key="download_transcript_button"
             )
         
         with st.spinner("Gemini AI로 요약 생성 중..."):
@@ -424,12 +420,13 @@ def main():
         
         with summary_placeholder.container():
             st.markdown("### 🤖 AI 요약 (Gemini 1.5 Flash)")
-            summary_text_area.markdown(summary, unsafe_allow_html=True) # Markdown 지원
+            summary_text_area.markdown(summary, unsafe_allow_html=True) 
             download_summary_button.download_button(
                 "📥 요약 다운로드 (.md)",
                 summary,
                 f"summary_{video_id}.md",
-                mime="text/markdown"
+                mime="text/markdown",
+                key="download_summary_button"
             )
 
 if __name__ == "__main__":
