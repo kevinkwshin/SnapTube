@@ -29,11 +29,7 @@ from typing import List
 import streamlit as st
 from youtube_transcript_api import YouTubeTranscriptApi, TranscriptsDisabled
 
-try:
-    # unified import introduced in google‑generativeai>=0.3
-    import google.generativeai as genai
-except ImportError as e:  # pragma: no cover – user must add to requirements
-    raise SystemExit("Missing dependency: pip install google‑generativeai") from e
+import google.generativeai as genai
 
 ###########################################################################
 # ------------------------------- UI ------------------------------------ #
