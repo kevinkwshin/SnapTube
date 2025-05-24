@@ -163,12 +163,16 @@ def get_transcript_with_retry(video_id, max_attempts=5):
                     if original_session_init:
                         restore_requests_session(original_session_init)
                     return None, None
-                    
-        except (TranscriptsDisabled, NoTranscriptFound) as e:
-            st.warning(f"자막 문제: {e}")
-            if original_session_init:
-                restore_requests_session(original_session_init)
-            return None, None
+            
+            except (TranscriptsDisabled, NoTranscriptFound) as e:
+                st.warning(f"자막 문제: {e}")
+                if original_session_init:
+                    restore_requests_session(original_session_init)
+                return None, None
+            
+            except Exception as inner_e:
+                # 내부 예외는 다시 raise하여 외부에서 처리
+                raise inner_e
                 
         except Exception as e:
             error_msg = str(e).lower()
