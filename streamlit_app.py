@@ -32,7 +32,6 @@ from youtube_transcript_api import YouTubeTranscriptApi, TranscriptsDisabled
 
 # Google Generative AI SDK
 import google.generativeai as genai
-from google.generativeai import types
 
 ###########################################################################
 # ------------------------------- UI ------------------------------------ #
