@@ -210,17 +210,17 @@ def summarize_text(text, api_key):
         
         model = genai.GenerativeModel('gemini-1.5-flash-latest')
         
-        prompt = f"""다음 YouTube 자막을 핵심요약을 가독성 좋게 번호를 매겨 정리해 주세요:
+        prompt = f"""다음 YouTube 자막을 한국어로 요약해주세요:
 
 자막 내용:
 {text}
 
 요약 형식:
-## 📌 주요 주제 (간단한 요약 포함)
-## 🔑 핵심 내용
+## 📌 주요 주제
+## 🔑 핵심 내용 (3-5개)
 ## 💡 결론 및 시사점
 
-명확하고 간결하게 작성해주세요."""
+한국어로 명확하고 간결하게 작성해주세요."""
         
         response = model.generate_content(prompt)
         return response.text
@@ -230,13 +230,13 @@ def summarize_text(text, api_key):
 
 def main():
     st.set_page_config(
-        page_title="SnapTube: 자막 추출 및 요약",
+        page_title="YouTube 자막 요약기",
         page_icon="📺",
         layout="wide"
     )
     
-    st.title("📺 SnapTube")
-    st.markdown("YouTube 비디오의 자막을 추출하고 AI로 요약합니다.")
+    st.title("📺 YouTube 자막 요약기")
+    st.markdown("YouTube 비디오의 자막을 추출하고 Gemini AI로 요약합니다.")
     
     col1, col2 = st.columns(2)
     
@@ -256,7 +256,7 @@ def main():
     
     video_input = st.text_input(
         "🎥 YouTube URL 또는 비디오 ID",
-        placeholder="예: https://www.youtube.com/watch?v=ABCDEFGHIJK"
+        placeholder="예: https://www.youtube.com/watch?v=dQw4w9WgXcQ"
     )
     
     if st.button("🚀 자막 추출 및 요약", type="primary", disabled=(not gemini_api_key)):
