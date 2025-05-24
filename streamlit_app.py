@@ -93,7 +93,7 @@ def get_transcript(video_id):
 def summarize_text(text, api_key):
     try:
         genai.configure(api_key=api_key)
-        model = genai.GenerativeModel('gemini-2.5-flash-latest')
+        model = genai.GenerativeModel('gemini-2.0-flash-latest')
         prompt = f"""다음 YouTube 자막을 친절하게 한국어로 상세히 가독성 좋게 이모티콘과 함께 요약해주세요. 요약에는 다음 요소들이 포함되어야 합니다:
 
 1.  **📌 주요 주제 및 목적**: 이 영상이 무엇에 관한 내용인지, 주요 메시지는 무엇인지 설명합니다.
