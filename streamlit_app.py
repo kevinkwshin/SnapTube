@@ -31,7 +31,8 @@ import streamlit as st
 from youtube_transcript_api import YouTubeTranscriptApi, TranscriptsDisabled
 
 # Google Generative AI SDK
-import google.generativeai as genai
+from google import genai
+from google.genai import types
 
 ###########################################################################
 # ------------------------------- UI ------------------------------------ #
