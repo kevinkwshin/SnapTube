@@ -31,15 +31,8 @@ def extract_video_id(url):
 
 def get_transcript(video_id):
     preferred_langs = ['ko', 'en']
-    try:
-        ytt_api = YouTubeTranscriptApi()
-        transcript_list = ytt_api.list(video_id)
-    except TranscriptsDisabled:
-        return None, "이 비디오는 자막이 비활성화되어 있습니다."
-    except NoTranscriptFound:
-        return None, "이 비디오에는 자막이 없습니다."
-    except Exception as e:
-        return None, f"자막 추출 실패: {str(e)}"
+    ytt_api = YouTubeTranscriptApi()
+    transcript_list = ytt_api.list(video_id)
 
     selected_transcript = None
     # 1. 수동 한글/영어
@@ -59,32 +52,13 @@ def get_transcript(video_id):
                     break
             if selected_transcript:
                 break
-    # 3. 기타 수동
-    if not selected_transcript:
-        for t in transcript_list:
-            if t.is_generated == 0:
-                selected_transcript = t
-                break
-    # 4. 기타 자동
-    if not selected_transcript:
-        for t in transcript_list:
-            if t.is_generated == 1:
-                selected_transcript = t
-                break
 
     if selected_transcript:
-        try:
-            transcript_data = selected_transcript.fetch()
-            text = ' '.join([item['text'] for item in transcript_data if 'text' in item])
-            transcript_type = "수동 생성" if selected_transcript.is_generated == 0 else "자동 생성"
-            lang_info = f"{selected_transcript.language} ({selected_transcript.language_code})"
-            return text, f"{transcript_type} - {lang_info}"
-        except TranscriptsDisabled:
-            return None, "이 비디오는 자막이 비활성화되어 있습니다."
-        except NoTranscriptFound:
-            return None, "이 비디오에는 자막이 없습니다."
-        except Exception as e:
-            return None, f"자막 fetch 실패: {str(e)}"
+        transcript_data = selected_transcript.fetch()
+        text = ' '.join([item['text'] for item in transcript_data if 'text' in item])
+        transcript_type = "수동 생성" if selected_transcript.is_generated == 0 else "자동 생성"
+        lang_info = f"{selected_transcript.language} ({selected_transcript.language_code})"
+        return text, f"{transcript_type} - {lang_info}"
     else:
         langlist = [f"{t.language} ({t.language_code}, {'수동' if t.is_generated == 0 else '자동'})"
                     for t in transcript_list]
