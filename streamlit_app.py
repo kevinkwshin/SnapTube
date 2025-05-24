@@ -8,8 +8,15 @@ import xml.etree.ElementTree as ET
 import html
 
 # youtube-transcript-api 라이브러리가 필요합니다.
-# 터미널에서: pip install youtube-transcript-api
-from youtube_transcript_api import YouTubeTranscriptApi, TranscriptsDisabled, NoTranscriptFound, NoTranscriptAvailable
+# 실행 환경에 설치되어 있는지 확인하세요. (pip install youtube-transcript-api)
+# Streamlit Cloud의 경우 requirements.txt 파일에 'youtube-transcript-api'가 포함되어야 합니다.
+try:
+    from youtube_transcript_api import YouTubeTranscriptApi, TranscriptsDisabled, NoTranscriptFound, NoTranscriptAvailable
+except ImportError:
+    st.error("ImportError: 'youtube_transcript_api' 라이브러리를 찾을 수 없습니다. 설치가 필요합니다.")
+    st.code("pip install youtube-transcript-api")
+    st.markdown("Streamlit Cloud를 사용 중이라면, `requirements.txt` 파일에 `youtube-transcript-api`를 추가해주세요.")
+    st.stop() # 라이브러리가 없으면 앱 실행 중지
 
 # --- 비디오 ID 추출 ---
 def extract_video_id(url):
@@ -44,66 +51,53 @@ def get_transcript_from_youtube_api(video_id):
     try:
         transcript_list = YouTubeTranscriptApi.list_transcripts(video_id)
         
-        # 우선순위 언어 코드
         priority_langs = ['ko', 'en']
         
         # 1. 수동 생성 자막 탐색
-        # 1.1. 한국어 수동 자막
         try:
             transcript = transcript_list.find_manually_created_transcript(['ko'])
             fetched_transcript = transcript.fetch()
             st.caption("YouTube API: 'ko' 수동 생성 자막 발견.")
             return ' '.join([item['text'] for item in fetched_transcript]), "YouTube API (ko, 수동)"
-        except NoTranscriptFound:
-            pass
+        except NoTranscriptFound: pass
             
-        # 1.2. 영어 수동 자막
         try:
             transcript = transcript_list.find_manually_created_transcript(['en'])
             fetched_transcript = transcript.fetch()
             st.caption("YouTube API: 'en' 수동 생성 자막 발견.")
             return ' '.join([item['text'] for item in fetched_transcript]), "YouTube API (en, 수동)"
-        except NoTranscriptFound:
-            pass
+        except NoTranscriptFound: pass
 
-        # 1.3. 기타 언어 수동 자막 (첫 번째 발견)
         for t in transcript_list:
             if not t.is_generated and t.language_code not in priority_langs:
                 try:
                     fetched_transcript = t.fetch()
                     st.caption(f"YouTube API: '{t.language_code}' 수동 생성 자막 발견.")
                     return ' '.join([item['text'] for item in fetched_transcript]), f"YouTube API ({t.language_code}, 수동)"
-                except Exception:
-                    continue # 다른 수동 자막 시도
+                except Exception: continue
 
         # 2. 자동 생성 자막 탐색
-        # 2.1. 한국어 자동 자막
         try:
             transcript = transcript_list.find_generated_transcript(['ko'])
             fetched_transcript = transcript.fetch()
             st.caption("YouTube API: 'ko' 자동 생성 자막 발견.")
             return ' '.join([item['text'] for item in fetched_transcript]), "YouTube API (ko, 자동)"
-        except NoTranscriptFound:
-            pass
+        except NoTranscriptFound: pass
 
-        # 2.2. 영어 자동 자막
         try:
             transcript = transcript_list.find_generated_transcript(['en'])
             fetched_transcript = transcript.fetch()
             st.caption("YouTube API: 'en' 자동 생성 자막 발견.")
             return ' '.join([item['text'] for item in fetched_transcript]), "YouTube API (en, 자동)"
-        except NoTranscriptFound:
-            pass
+        except NoTranscriptFound: pass
             
-        # 2.3. 기타 언어 자동 자막 (첫 번째 발견)
         for t in transcript_list:
             if t.is_generated and t.language_code not in priority_langs:
                 try:
                     fetched_transcript = t.fetch()
                     st.caption(f"YouTube API: '{t.language_code}' 자동 생성 자막 발견.")
                     return ' '.join([item['text'] for item in fetched_transcript]), f"YouTube API ({t.language_code}, 자동)"
-                except Exception:
-                    continue # 다른 자동 자막 시도
+                except Exception: continue
 
         st.warning("자막 추출 실패 (YouTube API): 우선순위에 맞는 사용 가능한 자막을 찾지 못했습니다.")
         return None, "자막 없음 (API 시도 후)"
@@ -111,7 +105,7 @@ def get_transcript_from_youtube_api(video_id):
     except TranscriptsDisabled:
         st.warning(f"자막 추출 실패 (YouTube API): [{video_id}] 비디오에 대해 자막이 비활성화되어 있습니다.")
         return None, "자막 비활성화"
-    except NoTranscriptAvailable: # list_transcripts에서 자막 목록 자체가 없을 때
+    except NoTranscriptAvailable:
         st.warning(f"자막 추출 실패 (YouTube API): [{video_id}] 비디오에 사용 가능한 자막 목록이 없습니다.")
         return None, "사용 가능한 자막 목록 없음"
     except Exception as e:
@@ -124,7 +118,7 @@ def get_transcript_youtube_direct(video_id):
     """YouTube에서 직접 자막 정보 가져오기 (스크래핑, 신뢰도 낮음)"""
     progress_placeholder = st.empty()
     log_messages = []
-    priority_langs = ['ko', 'en'] # 스크래핑 시에도 이 우선순위 고려
+    priority_langs = ['ko', 'en']
 
     try:
         progress_placeholder.info(f"🔄 YouTube 직접 스크래핑 시도 (우선순위: 수동 > 자동, ko > en > 기타)...")
@@ -134,7 +128,7 @@ def get_transcript_youtube_direct(video_id):
             q = 0.9 - i * 0.1
             accept_lang_header_parts.append(f"{lang_code}-{lang_code.upper()};q={q}")
             accept_lang_header_parts.append(f"{lang_code};q={q-0.05}")
-        accept_lang_header_parts.append("en-US;q=0.5,en;q=0.4") # 기본 영어
+        accept_lang_header_parts.append("en-US;q=0.5,en;q=0.4")
         accept_lang_header = ','.join(accept_lang_header_parts)
 
         headers = {
@@ -148,10 +142,8 @@ def get_transcript_youtube_direct(video_id):
             page_content = response.text
             caption_url = None
             source_type = None
-            
             all_found_tracks = []
 
-            # 1. playerCaptionsTracklistRenderer (최신 방식일 가능성)
             match_player_captions = re.search(r'"playerCaptionsTracklistRenderer":\s*(\{.*?\})', page_content)
             if match_player_captions:
                 source_type = 'playerCaptions'
@@ -163,13 +155,11 @@ def get_transcript_youtube_direct(video_id):
                 except Exception as e:
                     log_messages.append(f"ERROR ({source_type}): 처리 중 오류 - {e}")
 
-            # 2. 기존 captionTracks (위에서 못 찾았거나 추가 탐색)
-            caption_tracks_match = re.search(r'"captionTracks":(\[.*?\])', page_content) # Note: Not 'else if'
+            caption_tracks_match = re.search(r'"captionTracks":(\[.*?\])', page_content)
             if caption_tracks_match:
-                source_type = source_type or 'legacyCaptionTracks' # If not set by playerCaptions
+                source_type = source_type or 'legacyCaptionTracks'
                 try:
                     caption_tracks_json_str = caption_tracks_match.group(1).encode('utf-8').decode('unicode_escape')
-                    # 중복 방지 위해 이미 all_found_tracks에 있는 baseUrl은 추가하지 않음 (간단한 체크)
                     existing_baseUrls = {track.get("baseUrl") for track in all_found_tracks}
                     new_tracks = json.loads(caption_tracks_json_str)
                     for nt in new_tracks:
@@ -179,34 +169,30 @@ def get_transcript_youtube_direct(video_id):
                     log_messages.append(f"ERROR (legacyCaptionTracks): 처리 중 오류 - {e}")
             
             log_messages.append(f"DEBUG: 총 {len(all_found_tracks)}개의 자막 트랙 정보 발견 (스크래핑)")
-
-            # 자막 선택 로직 (수동 > 자동, ko > en > 기타)
             selected_track_info = None
 
-            # 1. 수동 자막 (ko > en > 기타)
             for lang in priority_langs:
                 for track in all_found_tracks:
-                    if track.get("languageCode") == lang and "baseUrl" in track and track.get("kind") != "asr" and not track.get("isTranslatable"): # isTranslatable 없는게 순수 수동
+                    if track.get("languageCode") == lang and "baseUrl" in track and track.get("kind") != "asr" and not track.get("isTranslatable"):
                         selected_track_info = (track["baseUrl"], f"{lang}, 수동")
                         break
                 if selected_track_info: break
             
-            if not selected_track_info: # 기타 언어 수동
+            if not selected_track_info:
                 for track in all_found_tracks:
                     if "baseUrl" in track and track.get("kind") != "asr" and not track.get("isTranslatable") and track.get("languageCode") not in priority_langs:
                         selected_track_info = (track["baseUrl"], f"{track.get('languageCode', 'N/A')}, 수동")
                         break
             
-            # 2. 자동 자막 (ko > en > 기타) - 수동 없으면
             if not selected_track_info:
                 for lang in priority_langs:
                     for track in all_found_tracks:
-                        if track.get("languageCode") == lang and "baseUrl" in track and (track.get("kind") == "asr" or track.get("isTranslatable")): # ASR 또는 번역 가능한 것도 자동 범주
+                        if track.get("languageCode") == lang and "baseUrl" in track and (track.get("kind") == "asr" or track.get("isTranslatable")):
                             selected_track_info = (track["baseUrl"], f"{lang}, 자동")
                             break
                     if selected_track_info: break
 
-            if not selected_track_info: # 기타 언어 자동
+            if not selected_track_info:
                 for track in all_found_tracks:
                     if "baseUrl" in track and (track.get("kind") == "asr" or track.get("isTranslatable")) and track.get("languageCode") not in priority_langs:
                         selected_track_info = (track["baseUrl"], f"{track.get('languageCode', 'N/A')}, 자동")
@@ -216,8 +202,8 @@ def get_transcript_youtube_direct(video_id):
                 caption_url, track_desc = selected_track_info
                 log_messages.append(f"INFO: 선택된 자막 트랙 ({track_desc}) URL: {caption_url}")
                 
-                if 'format=' not in caption_url:
-                    caption_url += "&fmt=srv3" # srv3가 일반적 xml
+                if 'format=' not in caption_url: # 예전에는 fmt 였으나, 최근에는 format이 더 많이 보임
+                    caption_url += "&format=srv3" # srv3 (XML), ttml (Timed Text XML), vtt (WebVTT)
 
                 caption_response = requests.get(caption_url, headers=headers, timeout=15)
                 if caption_response.status_code == 200:
@@ -271,18 +257,15 @@ def get_transcript_youtube_direct(video_id):
 def get_transcript(video_id):
     """모든 방법을 시도해서 자막 가져오기"""
     
-    # 방법 1: youtube-transcript-api (가장 안정적)
     st.info("🔄 방법 1: YouTube API (라이브러리) 시도 중...")
     transcript_text, method = get_transcript_from_youtube_api(video_id)
     if transcript_text:
         st.success(f"✅ {method} 통해 자막 확보!")
         return transcript_text, method, len(transcript_text)
     
-    # 방법 2: YouTube 직접 스크래핑 (덜 안정적, fallback)
     st.warning("⚠️ YouTube API 라이브러리 실패. 직접 스크래핑 시도 중 (신뢰도 낮음)...")
     transcript_text = get_transcript_youtube_direct(video_id)
     if transcript_text:
-        # 스크래핑 성공 시 method 문자열에 스크래핑 정보가 담겨있지 않으므로 직접 구성
         st.success("✅ 직접 스크래핑 통해 자막 확보!")
         return transcript_text, "직접 스크래핑", len(transcript_text)
     
@@ -408,7 +391,7 @@ def summarize_text(text, api_key):
 # --- Streamlit UI ---
 def main():
     st.set_page_config(
-        page_title="YouTube 자막 요약기 (v2.1)", # 버전 업데이트
+        page_title="YouTube 자막 요약기 (v2.1)",
         page_icon="📺✨",
         layout="wide"
     )
@@ -431,10 +414,6 @@ def main():
         
         st.link_button("API 키 발급받기 (Google AI Studio)", "https://makersuite.google.com/app/apikey")
         
-        # 언어 선택 옵션 제거됨
-        # st.subheader("자막 언어 설정")
-        # ...
-
     video_input = st.text_input(
         "🎥 YouTube URL 또는 비디오 ID",
         placeholder="예: https://www.youtube.com/watch?v=dQw4w9WgXcQ 또는 dQw4w9WgXcQ",
@@ -455,7 +434,7 @@ def main():
         
         transcript_text, method, length = None, None, None
         with st.spinner("📄 자막 가져오는 중... (최대 30초 소요될 수 있음)"):
-            transcript_text, method, length = get_transcript(video_id) # preferred_languages 인자 제거
+            transcript_text, method, length = get_transcript(video_id)
         
         if not transcript_text:
             st.error("❌ 자막을 가져올 수 없었습니다. 다음을 확인해주세요:")
