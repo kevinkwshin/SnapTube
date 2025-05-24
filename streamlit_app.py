@@ -171,24 +171,6 @@ if start_button:
             st.error(f"Unable to retrieve transcript: {exc}")
             st.stop()
     st.success(f"Retrieved {len(transcript_text):,} characters of transcript.")
-
-    # with st.expander("Raw transcript"):
-    #     st.write(transcript_text)
-
-    # # ------ Summarise -------------------------------------------------- #
-    # with st.spinner("Generating summary with Gemini …"):
-    #     try:
-    #         summary_md = summarize(transcript_text, api_key)
-    #     except Exception as exc:
-    #         st.error(f"Gemini error: {exc}")
-    #         st.stop()
-
-    # st.markdown("### 🔍 Summary")
-    # st.markdown(summary_md)
-
-    # st.toast("Done! ✨", icon="🎉")
-
-
     # ------ 요약 결과를 왼쪽과 오른쪽 열에 표시 ---------------------------------- #
     col1, col2 = st.columns(2)
     with col1:
