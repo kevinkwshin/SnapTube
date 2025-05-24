@@ -4,7 +4,6 @@ from youtube_transcript_api import YouTubeTranscriptApi, TranscriptsDisabled, No
 import re
 from urllib.parse import urlparse, parse_qs
 
-# 유튜브 비디오 ID 추출 함수
 def extract_video_id(url):
     if not url:
         return None
@@ -30,12 +29,10 @@ def extract_video_id(url):
     else:
         return None
 
-# 자막 추출 함수 (0.6.0 인스턴스 메서드 전용)
 def get_transcript(video_id):
     preferred_langs = ['ko', 'en']
     try:
         ytt_api = YouTubeTranscriptApi()
-        # 0.6.0 기준 인스턴스 메서드 list 사용
         transcript_list = ytt_api.list(video_id)
     except TranscriptsDisabled:
         return None, "이 비디오는 자막이 비활성화되어 있습니다."
@@ -45,33 +42,33 @@ def get_transcript(video_id):
         return None, f"자막 추출 실패: {str(e)}"
 
     selected_transcript = None
-    # 수동 한글/영어
+    # 1. 수동 한글/영어
     for lang in preferred_langs:
         for t in transcript_list:
-            if not t.is_generated and t.language_code == lang:
+            if t.is_generated == 0 and t.language_code == lang:
                 selected_transcript = t
                 break
         if selected_transcript:
             break
-    # 자동 한글/영어
+    # 2. 자동 한글/영어
     if not selected_transcript:
         for lang in preferred_langs:
             for t in transcript_list:
-                if t.is_generated and t.language_code == lang:
+                if t.is_generated == 1 and t.language_code == lang:
                     selected_transcript = t
                     break
             if selected_transcript:
                 break
-    # 기타 수동
+    # 3. 기타 수동
     if not selected_transcript:
         for t in transcript_list:
-            if not t.is_generated:
+            if t.is_generated == 0:
                 selected_transcript = t
                 break
-    # 기타 자동
+    # 4. 기타 자동
     if not selected_transcript:
         for t in transcript_list:
-            if t.is_generated:
+            if t.is_generated == 1:
                 selected_transcript = t
                 break
 
@@ -79,7 +76,7 @@ def get_transcript(video_id):
         try:
             transcript_data = selected_transcript.fetch()
             text = ' '.join([item['text'] for item in transcript_data if 'text' in item])
-            transcript_type = "수동 생성" if not selected_transcript.is_generated else "자동 생성"
+            transcript_type = "수동 생성" if selected_transcript.is_generated == 0 else "자동 생성"
             lang_info = f"{selected_transcript.language} ({selected_transcript.language_code})"
             return text, f"{transcript_type} - {lang_info}"
         except TranscriptsDisabled:
@@ -89,12 +86,10 @@ def get_transcript(video_id):
         except Exception as e:
             return None, f"자막 fetch 실패: {str(e)}"
     else:
-        # 사용 가능한 자막 목록 안내
-        langlist = [f"{t.language} ({t.language_code}, {'수동' if not t.is_generated else '자동'})"
+        langlist = [f"{t.language} ({t.language_code}, {'수동' if t.is_generated == 0 else '자동'})"
                     for t in transcript_list]
         return None, f"우선순위에 맞는 자막을 찾을 수 없습니다. 전체: {', '.join(langlist)}"
 
-# Gemini 요약 함수 (최신 pro모델 사용)
 def summarize_text(text, api_key):
     try:
         genai.configure(api_key=api_key)
@@ -139,7 +134,8 @@ def main():
             st.info("가능한 원인:\n"
                     "- 비공개/연령제한/멤버십 영상\n"
                     "- 자막 없음\n"
-                    "- 네트워크/버전 이슈")
+                    "- 네트워크/버전 이슈\n"
+                    "- python-youtube-transcript-api 버전 미지원 (list()가 반드시 있어야 함)")
             return
 
         st.success(f"✅ 자막 추출 성공! ({method})")
