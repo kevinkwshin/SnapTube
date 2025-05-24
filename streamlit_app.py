@@ -30,16 +30,17 @@ def extract_video_id(url):
     else:
         return None
 
-# 자막 추출 함수 (구버전/신버전 모두 지원)
+# 자막 추출 함수 (0.6.0 인스턴스 메서드 전용)
 def get_transcript(video_id):
     preferred_langs = ['ko', 'en']
     try:
-        # 인스턴스 메서드 우선 시도 (구버전 지원)
         ytt_api = YouTubeTranscriptApi()
-        if hasattr(ytt_api, "list"):
-            transcript_list = ytt_api.list(video_id)
-        else:
-            transcript_list = YouTubeTranscriptApi.list_transcripts(video_id)
+        # 0.6.0 기준 인스턴스 메서드 list 사용
+        transcript_list = ytt_api.list(video_id)
+    except TranscriptsDisabled:
+        return None, "이 비디오는 자막이 비활성화되어 있습니다."
+    except NoTranscriptFound:
+        return None, "이 비디오에는 자막이 없습니다."
     except Exception as e:
         return None, f"자막 추출 실패: {str(e)}"
 
@@ -81,6 +82,10 @@ def get_transcript(video_id):
             transcript_type = "수동 생성" if not selected_transcript.is_generated else "자동 생성"
             lang_info = f"{selected_transcript.language} ({selected_transcript.language_code})"
             return text, f"{transcript_type} - {lang_info}"
+        except TranscriptsDisabled:
+            return None, "이 비디오는 자막이 비활성화되어 있습니다."
+        except NoTranscriptFound:
+            return None, "이 비디오에는 자막이 없습니다."
         except Exception as e:
             return None, f"자막 fetch 실패: {str(e)}"
     else:
@@ -89,7 +94,7 @@ def get_transcript(video_id):
                     for t in transcript_list]
         return None, f"우선순위에 맞는 자막을 찾을 수 없습니다. 전체: {', '.join(langlist)}"
 
-# Gemini 요약 함수
+# Gemini 요약 함수 (최신 pro모델 사용)
 def summarize_text(text, api_key):
     try:
         genai.configure(api_key=api_key)
@@ -127,22 +132,14 @@ def main():
             st.stop()
 
         with st.spinner("유튜브 자막 추출 중..."):
-            try:
-                transcript, method = get_transcript(video_id)
-            except TranscriptsDisabled:
-                st.error("이 비디오는 자막이 비활성화되어 있습니다.")
-                st.stop()
-            except NoTranscriptFound:
-                st.error("이 비디오에는 자막이 없습니다.")
-                st.stop()
+            transcript, method = get_transcript(video_id)
 
         if not transcript:
             st.error(f"자막 추출 실패: {method}")
             st.info("가능한 원인:\n"
                     "- 비공개/연령제한/멤버십 영상\n"
                     "- 자막 없음\n"
-                    "- 네트워크/버전 이슈\n"
-                    "Cloud에서 빈번한 경우 Colab/로컬에서 실행 권장")
+                    "- 네트워크/버전 이슈")
             return
 
         st.success(f"✅ 자막 추출 성공! ({method})")
