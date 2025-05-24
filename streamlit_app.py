@@ -6,17 +6,34 @@ from urllib.parse import urlparse, parse_qs
 import json
 import xml.etree.ElementTree as ET
 import html
+import sys
+import subprocess
 
-# youtube-transcript-api 라이브러리가 필요합니다.
-# 실행 환경에 설치되어 있는지 확인하세요. (pip install youtube-transcript-api)
-# Streamlit Cloud의 경우 requirements.txt 파일에 'youtube-transcript-api'가 포함되어야 합니다.
-try:
-    from youtube_transcript_api import YouTubeTranscriptApi, TranscriptsDisabled, NoTranscriptFound, NoTranscriptAvailable
-except ImportError:
-    st.error("ImportError: 'youtube_transcript_api' 라이브러리를 찾을 수 없습니다. 설치가 필요합니다.")
-    st.code("pip install youtube-transcript-api")
-    st.markdown("Streamlit Cloud를 사용 중이라면, `requirements.txt` 파일에 `youtube-transcript-api`를 추가해주세요.")
-    st.stop() # 라이브러리가 없으면 앱 실행 중지
+# youtube-transcript-api 라이브러리 자동 설치 및 import 시도
+def install_and_import_youtube_transcript():
+    """youtube-transcript-api 라이브러리를 자동으로 설치하고 import"""
+    try:
+        from youtube_transcript_api import YouTubeTranscriptApi, TranscriptsDisabled, NoTranscriptFound, NoTranscriptAvailable
+        return YouTubeTranscriptApi, TranscriptsDisabled, NoTranscriptFound, NoTranscriptAvailable, True
+    except ImportError:
+        st.warning("📦 youtube-transcript-api 라이브러리가 설치되지 않았습니다. 자동 설치를 시도합니다...")
+        
+        try:
+            # 라이브러리 자동 설치 시도
+            subprocess.check_call([sys.executable, "-m", "pip", "install", "youtube-transcript-api"])
+            st.success("✅ youtube-transcript-api 라이브러리가 성공적으로 설치되었습니다!")
+            
+            # 재시도
+            from youtube_transcript_api import YouTubeTranscriptApi, TranscriptsDisabled, NoTranscriptFound, NoTranscriptAvailable
+            return YouTubeTranscriptApi, TranscriptsDisabled, NoTranscriptFound, NoTranscriptAvailable, True
+            
+        except Exception as install_error:
+            st.error(f"❌ 자동 설치 실패: {install_error}")
+            st.info("💡 라이브러리 없이도 직접 스크래핑 방식으로 자막 추출을 시도합니다.")
+            return None, None, None, None, False
+
+# 라이브러리 로딩 시도
+YouTubeTranscriptApi, TranscriptsDisabled, NoTranscriptFound, NoTranscriptAvailable, HAS_YOUTUBE_API = install_and_import_youtube_transcript()
 
 # --- 비디오 ID 추출 ---
 def extract_video_id(url):
@@ -48,6 +65,10 @@ def extract_video_id(url):
 # --- 자막 추출 로직 (youtube-transcript-api 사용 최우선, 수정된 우선순위) ---
 def get_transcript_from_youtube_api(video_id):
     """youtube-transcript-api 라이브러리를 사용하여 자막 가져오기 (수정된 우선순위)"""
+    if not HAS_YOUTUBE_API:
+        st.info("ℹ️ YouTube API 라이브러리를 사용할 수 없어 건너뜁니다.")
+        return None, "라이브러리 없음"
+    
     try:
         transcript_list = YouTubeTranscriptApi.list_transcripts(video_id)
         
@@ -257,13 +278,16 @@ def get_transcript_youtube_direct(video_id):
 def get_transcript(video_id):
     """모든 방법을 시도해서 자막 가져오기"""
     
-    st.info("🔄 방법 1: YouTube API (라이브러리) 시도 중...")
-    transcript_text, method = get_transcript_from_youtube_api(video_id)
-    if transcript_text:
-        st.success(f"✅ {method} 통해 자막 확보!")
-        return transcript_text, method, len(transcript_text)
+    if HAS_YOUTUBE_API:
+        st.info("🔄 방법 1: YouTube API (라이브러리) 시도 중...")
+        transcript_text, method = get_transcript_from_youtube_api(video_id)
+        if transcript_text:
+            st.success(f"✅ {method} 통해 자막 확보!")
+            return transcript_text, method, len(transcript_text)
+        st.warning("⚠️ YouTube API 라이브러리 실패. 직접 스크래핑 시도 중 (신뢰도 낮음)...")
+    else:
+        st.info("ℹ️ YouTube API 라이브러리를 사용할 수 없습니다. 직접 스크래핑 방식을 시도합니다.")
     
-    st.warning("⚠️ YouTube API 라이브러리 실패. 직접 스크래핑 시도 중 (신뢰도 낮음)...")
     transcript_text = get_transcript_youtube_direct(video_id)
     if transcript_text:
         st.success("✅ 직접 스크래핑 통해 자막 확보!")
@@ -391,7 +415,7 @@ def summarize_text(text, api_key):
 # --- Streamlit UI ---
 def main():
     st.set_page_config(
-        page_title="YouTube 자막 요약기 (v2.1)",
+        page_title="YouTube 자막 요약기 (v2.2)",
         page_icon="📺✨",
         layout="wide"
     )
@@ -399,6 +423,14 @@ def main():
     st.title("📺 YouTube 자막 요약기 ✨")
     st.markdown("YouTube 비디오의 자막을 추출하고 **Gemini AI** (최대 `gemini-1.5-flash-latest`)로 요약합니다.")
     st.caption("자막 선택 우선순위: (수동 자막: ko > en > 기타) > (자동 자막: ko > en > 기타)")
+    
+    # 라이브러리 상태 표시
+    if HAS_YOUTUBE_API:
+        st.success("✅ youtube-transcript-api 라이브러리 사용 가능", icon="📦")
+    else:
+        st.warning("⚠️ youtube-transcript-api 라이브러리 없음 - 직접 스크래핑 방식 사용", icon="📦")
+        st.info("💡 더 안정적인 자막 추출을 위해 다음 명령어로 라이브러리를 설치하는 것을 권장합니다:")
+        st.code("pip install youtube-transcript-api")
     
     with st.sidebar:
         st.header("⚙️ 설정")
@@ -413,6 +445,16 @@ def main():
             st.warning("API 키를 입력해주세요.", icon="⚠️")
         
         st.link_button("API 키 발급받기 (Google AI Studio)", "https://makersuite.google.com/app/apikey")
+        
+        # 라이브러리 상태 정보
+        st.divider()
+        st.header("📦 라이브러리 상태")
+        if HAS_YOUTUBE_API:
+            st.success("youtube-transcript-api: ✅ 사용 가능")
+        else:
+            st.error("youtube-transcript-api: ❌ 없음")
+            if st.button("🔄 라이브러리 재시도"):
+                st.rerun()
         
     video_input = st.text_input(
         "🎥 YouTube URL 또는 비디오 ID",
