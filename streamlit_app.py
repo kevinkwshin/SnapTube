@@ -3,11 +3,11 @@ import google.generativeai as genai
 import requests
 import re
 from urllib.parse import urlparse, parse_qs
-import xml.etree.ElementTree as ET
-import html
-import json
 import random
 import time
+from youtube_transcript_api import YouTubeTranscriptApi, TranscriptsDisabled, NoTranscriptFound
+from youtube_transcript_api._api import _TranscriptApi
+from youtube_transcript_api._errors import RequestBlockedException, TooManyRequestsException
 
 def extract_video_id(url):
     """YouTube URL에서 비디오 ID 추출"""
@@ -37,21 +37,29 @@ def extract_video_id(url):
         return None
 
 def get_random_headers():
-    """랜덤 User-Agent 헤더 생성"""
+    """랜덤 User-Agent와 헤더 생성"""
     user_agents = [
         'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
         'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
         'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
         'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:121.0) Gecko/20100101 Firefox/121.0',
         'Mozilla/5.0 (Macintosh; Intel Mac OS X 10.15; rv:121.0) Gecko/20100101 Firefox/121.0',
-        'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.2.1 Safari/605.1.15',
-        'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Edge/120.0.0.0'
+        'Mozilla/5.0 (iPhone; CPU iPhone OS 17_2 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.2 Mobile/15E148 Safari/604.1',
+        'Mozilla/5.0 (Android 14; Mobile; rv:121.0) Gecko/121.0 Firefox/121.0'
+    ]
+    
+    languages = [
+        'en-US,en;q=0.9',
+        'en-GB,en;q=0.9',
+        'ko-KR,ko;q=0.8,en-US;q=0.6,en;q=0.4',
+        'ja-JP,ja;q=0.9,en-US;q=0.8,en;q=0.7',
+        'zh-CN,zh;q=0.9,en-US;q=0.8,en;q=0.7'
     ]
     
     return {
         'User-Agent': random.choice(user_agents),
-        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
-        'Accept-Language': 'en-US,en;q=0.9,ko;q=0.8',
+        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,image/apng,*/*;q=0.8',
+        'Accept-Language': random.choice(languages),
         'Accept-Encoding': 'gzip, deflate, br',
         'DNT': '1',
         'Connection': 'keep-alive',
@@ -59,279 +67,132 @@ def get_random_headers():
         'Sec-Fetch-Dest': 'document',
         'Sec-Fetch-Mode': 'navigate',
         'Sec-Fetch-Site': 'none',
-        'Cache-Control': 'max-age=0'
+        'Sec-Fetch-User': '?1',
+        'Cache-Control': 'max-age=0',
+        'sec-ch-ua': '"Not_A Brand";v="8", "Chromium";v="120", "Google Chrome";v="120"',
+        'sec-ch-ua-mobile': '?0' if 'Mobile' not in random.choice(user_agents) else '?1',
+        'sec-ch-ua-platform': f'"{random.choice(["Windows", "macOS", "Linux"])}"'
     }
 
-def get_transcript_method1(video_id):
-    """방법 1: 직접 스크래핑 (IP 차단 우회)"""
-    try:
-        st.info("🔄 방법 1: 직접 스크래핑 시도...")
-        
-        headers = get_random_headers()
-        
-        # 여러 URL 패턴 시도
-        urls = [
-            f"https://www.youtube.com/watch?v={video_id}",
-            f"https://m.youtube.com/watch?v={video_id}",  # 모바일 버전
-            f"https://www.youtube.com/embed/{video_id}"   # 임베드 버전
-        ]
-        
-        for url in urls:
-            try:
-                # 랜덤 지연
-                time.sleep(random.uniform(0.5, 2.0))
-                
-                response = requests.get(url, headers=headers, timeout=15)
-                
-                if response.status_code == 200:
-                    page_content = response.text
-                    
-                    # 여러 패턴으로 자막 정보 찾기
-                    patterns = [
-                        r'"captionTracks":\s*(\[.*?\])',
-                        r'"captions".*?"captionTracks":\s*(\[.*?\])',  
-                        r'captionTracks["\']:\s*(\[.*?\])',
-                        r'"playerCaptionsTracklistRenderer".*?"captionTracks":\s*(\[.*?\])'
-                    ]
-                    
-                    for pattern in patterns:
-                        match = re.search(pattern, page_content, re.DOTALL)
-                        if match:
-                            try:
-                                tracks_str = match.group(1)
-                                tracks_str = tracks_str.encode('utf-8').decode('unicode_escape')
-                                tracks = json.loads(tracks_str)
-                                
-                                if tracks:
-                                    st.success(f"✅ {len(tracks)}개 자막 트랙 발견")
-                                    
-                                    # 수동 생성 우선
-                                    manual_tracks = [t for t in tracks if t.get('kind') != 'asr' and 'baseUrl' in t]
-                                    auto_tracks = [t for t in tracks if t.get('kind') == 'asr' and 'baseUrl' in t]
-                                    
-                                    selected_track = None
-                                    track_type = None
-                                    
-                                    if manual_tracks:
-                                        selected_track = manual_tracks[0]
-                                        track_type = "수동 생성"
-                                    elif auto_tracks:
-                                        selected_track = auto_tracks[0]
-                                        track_type = "자동 생성"
-                                    
-                                    if selected_track:
-                                        caption_url = selected_track['baseUrl']
-                                        lang = selected_track.get('languageCode', 'unknown')
-                                        
-                                        # 자막 내용 다운로드
-                                        time.sleep(random.uniform(0.5, 1.5))
-                                        caption_headers = get_random_headers()
-                                        caption_response = requests.get(caption_url, headers=caption_headers, timeout=10)
-                                        
-                                        if caption_response.status_code == 200:
-                                            return parse_xml_transcript(caption_response.text, f"{track_type} ({lang})")
-                                            
-                            except (json.JSONDecodeError, KeyError):
-                                continue
-                                
-            except requests.RequestException:
-                continue
-        
-        return None, None
-        
-    except Exception as e:
-        st.warning(f"방법 1 실패: {str(e)[:50]}...")
-        return None, None
-
-def get_transcript_method2(video_id):
-    """방법 2: 다른 접근 방식 - API 엔드포인트 직접 호출"""
-    try:
-        st.info("🔄 방법 2: API 엔드포인트 시도...")
-        
-        headers = get_random_headers()
-        
-        # 다양한 API 엔드포인트 시도
-        api_urls = [
-            f"https://www.youtube.com/api/timedtext?type=list&v={video_id}",
-            f"https://youtubei.googleapis.com/youtubei/v1/player?key=AIzaSyAO_FJ2SlqU8Q4STEHLGCilw_Y9_11qcW8&videoId={video_id}",
-        ]
-        
-        for api_url in api_urls:
-            try:
-                time.sleep(random.uniform(1.0, 2.0))
-                response = requests.get(api_url, headers=headers, timeout=10)
-                
-                if response.status_code == 200 and response.text.strip():
-                    if 'timedtext' in api_url:
-                        # timedtext API 응답 처리
-                        try:
-                            root = ET.fromstring(response.text)
-                            tracks = root.findall('.//track')
-                            
-                            if tracks:
-                                st.success(f"✅ {len(tracks)}개 자막 트랙 발견 (API)")
-                                
-                                # 수동 생성 우선
-                                selected_track = None
-                                track_type = None
-                                
-                                for track in tracks:
-                                    if track.get('kind') != 'asr':
-                                        selected_track = track
-                                        track_type = "수동 생성"
-                                        break
-                                
-                                if not selected_track:
-                                    for track in tracks:
-                                        if track.get('kind') == 'asr':
-                                            selected_track = track
-                                            track_type = "자동 생성"
-                                            break
-                                
-                                if selected_track:
-                                    lang_code = selected_track.get('lang_code', 'unknown')
-                                    caption_url = f"https://www.youtube.com/api/timedtext?lang={lang_code}&v={video_id}"
-                                    
-                                    if selected_track.get('kind') == 'asr':
-                                        caption_url += "&kind=asr"
-                                    
-                                    time.sleep(random.uniform(0.5, 1.0))
-                                    caption_response = requests.get(caption_url, headers=get_random_headers(), timeout=10)
-                                    
-                                    if caption_response.status_code == 200:
-                                        return parse_xml_transcript(caption_response.text, f"{track_type} ({lang_code})")
-                                        
-                        except ET.ParseError:
-                            continue
-                            
-            except requests.RequestException:
-                continue
-                
-        return None, None
-        
-    except Exception as e:
-        st.warning(f"방법 2 실패: {str(e)[:50]}...")
-        return None, None
-
-def get_transcript_method3(video_id):
-    """방법 3: youtube-transcript-api with proxies (fallback)"""
-    try:
-        st.info("🔄 방법 3: youtube-transcript-api 라이브러리 시도...")
-        
-        # youtube-transcript-api 임포트 (선택적)
-        try:
-            from youtube_transcript_api import YouTubeTranscriptApi, TranscriptsDisabled, NoTranscriptFound
-            
-            # 프록시 없이 먼저 시도
-            transcript_list = YouTubeTranscriptApi.list_transcripts(video_id)
-            
-            # 수동 생성 자막 우선
-            selected_transcript = None
-            transcript_type = None
-            
-            for transcript in transcript_list:
-                if not transcript.is_generated:
-                    selected_transcript = transcript
-                    transcript_type = "수동 생성"
-                    break
-            
-            if not selected_transcript:
-                for transcript in transcript_list:
-                    if transcript.is_generated:
-                        selected_transcript = transcript
-                        transcript_type = "자동 생성"
-                        break
-            
-            if selected_transcript:
-                transcript_data = selected_transcript.fetch()
-                full_text = ' '.join([item['text'] for item in transcript_data])
-                lang_info = f"({selected_transcript.language_code})"
-                
-                st.success(f"✅ youtube-transcript-api 성공!")
-                return full_text, f"{transcript_type} {lang_info}"
-                
-        except (TranscriptsDisabled, NoTranscriptFound):
-            return None, None
-        except Exception:
-            # 라이브러리가 없거나 차단된 경우
-            return None, None
-            
-    except Exception:
-        return None, None
-
-def parse_xml_transcript(xml_content, method_info):
-    """XML 자막 파싱"""
-    try:
-        root = ET.fromstring(xml_content)
-        texts = []
-        
-        # 다양한 태그 시도
-        for tag in ['text', 'p', 's']:
-            elements = root.findall(f'.//{tag}')
-            if elements:
-                for elem in elements:
-                    if elem.text and elem.text.strip():
-                        clean_text = html.unescape(elem.text.strip())
-                        clean_text = re.sub(r'\n+', ' ', clean_text)
-                        texts.append(clean_text)
-                break
-        
-        if texts:
-            full_text = ' '.join(texts)
-            full_text = re.sub(r'\s+', ' ', full_text).strip()
-            
-            if len(full_text) > 30:
-                return full_text, method_info
-        
-        # XML 파싱 실패시 정규식으로 텍스트 추출
-        text_matches = re.findall(r'<text[^>]*>(.*?)</text>', xml_content, re.DOTALL)
-        if text_matches:
-            texts = []
-            for match in text_matches:
-                clean_text = re.sub(r'<[^>]+>', '', match)
-                clean_text = html.unescape(clean_text.strip())
-                if clean_text:
-                    texts.append(clean_text)
-            
-            if texts:
-                full_text = ' '.join(texts)
-                full_text = re.sub(r'\s+', ' ', full_text).strip()
-                
-                if len(full_text) > 30:
-                    return full_text, method_info
-        
-        return None, None
-        
-    except ET.ParseError:
-        # 텍스트에서 직접 추출
-        text_content = re.sub(r'<[^>]+>', '', xml_content)
-        text_content = html.unescape(text_content).strip()
-        if len(text_content) > 30:
-            return text_content, method_info
-        return None, None
-
-def get_transcript(video_id):
-    """모든 방법을 시도하여 자막 가져오기"""
-    methods = [
-        get_transcript_method1,  # 직접 스크래핑
-        get_transcript_method2,  # API 엔드포인트
-        get_transcript_method3   # youtube-transcript-api
+def get_free_proxies():
+    """무료 프록시 목록 (실제 사용시 더 신뢰할 수 있는 프록시 서비스 권장)"""
+    return [
+        None,  # 프록시 없이 먼저 시도
+        # 여기에 실제 프록시를 추가할 수 있습니다
     ]
+
+def create_custom_session():
+    """커스텀 세션 생성 (IP 차단 우회용)"""
+    session = requests.Session()
+    session.headers.update(get_random_headers())
     
-    for method in methods:
+    # 쿠키 설정 (선택적)
+    session.cookies.update({
+        'CONSENT': 'YES+cb.20210328-17-p0.en+FX+1',
+        'SOCS': 'CAI',
+        'YSC': 'random_value_' + str(random.randint(1000, 9999))
+    })
+    
+    return session
+
+def get_transcript_with_retry(video_id, max_attempts=5):
+    """재시도 로직과 IP 우회를 포함한 자막 추출"""
+    
+    for attempt in range(max_attempts):
         try:
-            transcript_text, method_info = method(video_id)
-            if transcript_text and len(transcript_text) > 50:
-                return transcript_text, method_info
+            if attempt > 0:
+                delay = random.uniform(2, 5) * attempt
+                st.info(f"🔄 시도 {attempt + 1}/{max_attempts} (대기: {delay:.1f}초)")
+                time.sleep(delay)
+            else:
+                st.info(f"🔄 시도 {attempt + 1}/{max_attempts}")
             
-            # 각 방법 사이에 지연
-            time.sleep(random.uniform(1.0, 3.0))
+            # 랜덤 헤더로 세션 생성
+            custom_session = create_custom_session()
+            
+            # youtube-transcript-api의 내부 세션을 커스텀 세션으로 교체
+            original_session = requests.Session()
+            _TranscriptApi._session = custom_session
+            
+            try:
+                # 자막 목록 가져오기
+                transcript_list = YouTubeTranscriptApi.list_transcripts(video_id)
+                
+                # 수동 생성 자막 우선 검색
+                manual_transcript = None
+                auto_transcript = None
+                
+                for transcript in transcript_list:
+                    if not transcript.is_generated:  # 수동 생성
+                        manual_transcript = transcript
+                        break
+                
+                # 수동 생성이 없으면 자동 생성 찾기
+                if not manual_transcript:
+                    for transcript in transcript_list:
+                        if transcript.is_generated:  # 자동 생성
+                            auto_transcript = transcript
+                            break
+                
+                # 선택된 자막 가져오기
+                selected_transcript = manual_transcript if manual_transcript else auto_transcript
+                
+                if selected_transcript:
+                    # 자막 내용 다운로드 (여기서도 지연 추가)
+                    time.sleep(random.uniform(0.5, 1.5))
+                    transcript_data = selected_transcript.fetch()
+                    
+                    # 텍스트만 추출
+                    full_text = ' '.join([item['text'] for item in transcript_data])
+                    
+                    # 타입 정보
+                    transcript_type = "수동 생성" if not selected_transcript.is_generated else "자동 생성"
+                    lang_info = f"({selected_transcript.language_code})"
+                    
+                    st.success(f"✅ 성공! 시도 {attempt + 1}회만에 자막 추출")
+                    return full_text, f"{transcript_type} {lang_info}"
+                else:
+                    st.warning("사용 가능한 자막이 없습니다.")
+                    return None, None
+                    
+            finally:
+                # 원래 세션으로 복구
+                _TranscriptApi._session = original_session
+                
+        except (RequestBlockedException, TooManyRequestsException) as e:
+            st.warning(f"IP 차단 또는 요청 한도 초과 (시도 {attempt + 1})")
+            if attempt == max_attempts - 1:
+                st.error("모든 시도 실패: IP가 차단되었습니다.")
+                return None, None
+            continue
+            
+        except TranscriptsDisabled:
+            st.warning("이 비디오는 자막이 비활성화되어 있습니다.")
+            return None, None
+            
+        except NoTranscriptFound:
+            st.warning("이 비디오에서 자막을 찾을 수 없습니다.")
+            return None, None
             
         except Exception as e:
-            st.warning(f"방법 실패: {str(e)[:30]}...")
-            continue
+            error_msg = str(e).lower()
+            
+            # IP 차단 관련 에러 확인
+            if any(keyword in error_msg for keyword in ['blocked', 'ip', 'cloud', 'too many requests']):
+                st.warning(f"IP 관련 오류 (시도 {attempt + 1}): {str(e)[:100]}...")
+                if attempt == max_attempts - 1:
+                    st.error("IP 차단으로 모든 시도 실패")
+                    return None, None
+                continue
+            else:
+                st.error(f"자막 추출 중 오류: {e}")
+                return None, None
     
     return None, None
+
+def get_transcript(video_id):
+    """메인 자막 추출 함수"""
+    return get_transcript_with_retry(video_id)
 
 def summarize_text(text, api_key):
     """Gemini로 요약 생성"""
@@ -371,7 +232,7 @@ def main():
     
     st.title("📺 YouTube 자막 요약기")
     st.markdown("YouTube 비디오의 자막을 추출하고 Gemini AI로 요약합니다.")
-    st.caption("🛡️ IP 차단 우회 기능 포함")
+    st.caption("🛡️ youtube-transcript-api + IP 차단 우회 기능")
     
     gemini_api_key = st.text_input(
         "🔑 Gemini API Key",
@@ -383,6 +244,11 @@ def main():
         "🎥 YouTube URL 또는 비디오 ID",
         placeholder="예: https://www.youtube.com/watch?v=dQw4w9WgXcQ"
     )
+    
+    # 고급 설정
+    with st.expander("🔧 고급 설정"):
+        max_attempts = st.slider("최대 재시도 횟수", 1, 10, 5)
+        st.caption("IP 차단 시 재시도할 최대 횟수를 설정합니다.")
     
     if st.button("🚀 자막 추출 및 요약", type="primary", disabled=(not gemini_api_key)):
         if not video_input:
@@ -397,22 +263,22 @@ def main():
         st.info(f"🎯 비디오 ID: {video_id}")
         
         # 자막 추출
-        with st.spinner("자막 추출 중... (여러 방법을 시도합니다)"):
-            transcript_text, method = get_transcript(video_id)
+        with st.spinner("자막 추출 중... (IP 차단 우회 기능 활성화)"):
+            transcript_text, method = get_transcript_with_retry(video_id, max_attempts)
         
         if not transcript_text:
-            st.error("❌ 모든 방법으로 자막 추출에 실패했습니다.")
+            st.error("❌ 자막 추출에 실패했습니다.")
             with st.expander("💡 해결 방법"):
                 st.markdown("""
-                **가능한 원인:**
-                - 비디오에 자막이 없음
-                - 비디오가 비공개/연령제한/지역제한
-                - 일시적인 네트워크 문제
+                **IP 차단 문제 해결:**
+                - 최대 재시도 횟수를 늘려보세요 (고급 설정)
+                - 몇 시간 후 다시 시도해보세요
+                - 다른 네트워크 환경에서 시도해보세요
                 
-                **해결 방법:**
-                - 자막이 확실히 있는 다른 공개 비디오로 시도
-                - 몇 분 후 다시 시도
-                - 다른 네트워크 환경에서 시도
+                **기타 문제:**
+                - 비디오에 자막이 있는지 확인
+                - 비디오가 공개 상태인지 확인
+                - 다른 비디오로 시도
                 """)
             return
         
