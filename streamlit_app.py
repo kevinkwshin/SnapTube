@@ -29,6 +29,7 @@ from typing import List
 # ---------------------------- Third-party -------------------------------
 import streamlit as st
 from youtube_transcript_api import YouTubeTranscriptApi, TranscriptsDisabled
+from youtube_transcript_api.proxies import WebshareProxyConfig
 
 # Google Generative AI SDK
 from google import genai
@@ -90,10 +91,21 @@ def extract_video_id(url: str) -> str | None:
 @st.cache_data(show_spinner=False)
 def fetch_transcript(video_id: str) -> str:
     """Download transcript text for *video_id* and return as a single string."""
-    transcript: List[dict] = YouTubeTranscriptApi.get_transcript(
-        video_id,
-        languages=["ko", "en", "en-US", "en-GB"],
+    # transcript: List[dict] = YouTubeTranscriptApi.get_transcript(
+    #     video_id,
+    #     languages=["ko", "en"],
+    # )
+      
+    ytt_api = YouTubeTranscriptApi(
+        proxy_config=WebshareProxyConfig(
+            proxy_username="rdgbjthx",
+            proxy_password="4b4dux3d9pkc",
+        )
     )
+    
+    # all requests done by ytt_api will now be proxied through Webshare
+    transcript = ytt_api.fetch(video_id)
+  
     return " ".join(chunk["text"] for chunk in transcript)
 
 # ----------------------------------------------------------------------- #
