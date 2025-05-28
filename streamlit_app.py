@@ -104,7 +104,7 @@ def fetch_transcript(video_id: str) -> str:
     )
     
     # all requests done by ytt_api will now be proxied through Webshare
-    transcript = ytt_api.fetch(video_id)
+    transcript = ytt_api.fetch(video_id, languages=["ko", "en"])
   
     return " ".join(chunk["text"] for chunk in transcript)
 
